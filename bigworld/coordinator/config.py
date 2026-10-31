@@ -1,0 +1,192 @@
+"""Konfiguration des Koordinators (TOML, Standard: /etc/bigworld/coordinator.toml)."""
+
+from __future__ import annotations
+
+import os
+import secrets
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+DEFAULT_CONFIG_PATH = "/etc/bigworld/coordinator.toml"
+
+# Das einzige Volume, das der Deploy-Schritt jemals verändern darf.
+ALLOWED_VOLUME_WORLD = "/var/lib/pterodactyl/volumes/fd1a91d3-f2fd-441c-b99f-cad2457c8ab3/world"
+
+
+@dataclass
+class Dimension:
+    name: str
+    radius: int
+    path: str
+
+
+@dataclass
+class DeployConfig:
+    volume_world: str = ALLOWED_VOLUME_WORLD
+    backup_dir: str = ""
+    panel_url: str = ""
+    api_key: str = ""
+    server_id: str = "fd1a91d3"
+    owner: str = "pterodactyl"
+    post_start_commands: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Config:
+    host: str
+    port: int
+    data_dir: Path
+    worker_token: str
+    admin_token: str
+    tile_regions: int
+    lease_timeout_minutes: int
+    max_upload_gb: float
+    dimensions: list[Dimension]
+    verify_tiles: list[str]
+    deploy: DeployConfig
+    path: Path | None = None
+
+    def dimension(self, name: str) -> Dimension:
+        for d in self.dimensions:
+            if d.name == name:
+                return d
+        raise KeyError(name)
+
+    # Verzeichnisse ---------------------------------------------------------
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "state.sqlite"
+
+    @property
+    def bundle_src(self) -> Path:
+        return self.data_dir / "bundle-src"
+
+    @property
+    def bundles_dir(self) -> Path:
+        return self.data_dir / "bundles"
+
+    @property
+    def incoming_dir(self) -> Path:
+        return self.data_dir / "incoming"
+
+    @property
+    def verify_dir(self) -> Path:
+        return self.data_dir / "verify"
+
+    @property
+    def staging_world(self) -> Path:
+        return self.data_dir / "staging" / "world"
+
+
+def load(path: str | os.PathLike | None = None) -> Config:
+    p = Path(path or os.environ.get("BIGWORLD_CONFIG", DEFAULT_CONFIG_PATH))
+    with open(p, "rb") as f:
+        raw = tomllib.load(f)
+    srv = raw.get("server", {})
+    world = raw.get("world", {})
+    dims = [
+        Dimension(d["name"], int(d["radius"]), d.get("path", default_dim_path(d["name"])))
+        for d in world.get("dimensions", [])
+    ]
+    if not dims:
+        raise ValueError("Keine Dimensionen in [world] konfiguriert")
+    dep = raw.get("deploy", {})
+    deploy = DeployConfig(
+        volume_world=dep.get("volume_world", ALLOWED_VOLUME_WORLD),
+        backup_dir=dep.get("backup_dir", ""),
+        panel_url=dep.get("panel_url", "").rstrip("/"),
+        api_key=dep.get("api_key", ""),
+        server_id=dep.get("server_id", "fd1a91d3"),
+        owner=dep.get("owner", "pterodactyl"),
+        post_start_commands=list(dep.get("post_start_commands", [])),
+    )
+    for name in ("worker_token", "admin_token"):
+        if len(srv.get(name, "")) < 16:
+            raise ValueError(f"[server].{name} fehlt oder ist zu kurz (mind. 16 Zeichen)")
+    return Config(
+        host=srv.get("host", "127.0.0.1"),
+        port=int(srv.get("port", 8770)),
+        data_dir=Path(srv.get("data_dir", "/srv/bigworld")),
+        worker_token=srv["worker_token"],
+        admin_token=srv["admin_token"],
+        tile_regions=int(world.get("tile_regions", 4)),
+        lease_timeout_minutes=int(world.get("lease_timeout_minutes", 15)),
+        max_upload_gb=float(world.get("max_upload_gb", 20)),
+        dimensions=dims,
+        verify_tiles=list(raw.get("verify", {}).get("tiles", [])),
+        deploy=deploy,
+        path=p,
+    )
+
+
+def default_dim_path(name: str) -> str:
+    ns, _, dim = name.partition(":")
+    return f"dimensions/{ns}/{dim}"
+
+
+EXAMPLE = """\
+# Konfiguration des Big-World-Koordinators
+# Änderungen werden nach `sudo systemctl restart bigworld-coordinator` aktiv.
+
+[server]
+# Nur auf der Tailscale-IP lauschen: aus dem LAN und dem Internet nicht erreichbar.
+host = "100.72.176.11"
+port = 8770
+data_dir = "/srv/bigworld"
+# Token für die Worker-Programme (an Mitspieler weitergeben)
+worker_token = "{worker_token}"
+# Token für Prioritäten, Pause usw. in der Weboberfläche (nur für dich)
+admin_token = "{admin_token}"
+
+[world]
+# Kachelgröße in Regionen (1 Region = 512 Blöcke). 4 -> 2.048 x 2.048 Blöcke.
+tile_regions = 4
+# Ohne Lebenszeichen eines Workers wird seine Kachel nach dieser Zeit neu vergeben.
+lease_timeout_minutes = 15
+# Obergrenze für ein einzelnes Kachelpaket
+max_upload_gb = 20
+
+# Radius in Blöcken um 0,0 (die Welt wird auf ganze Regionen aufgerundet).
+# Testlauf: 2000. Echte Generierung Overworld: 15360.
+[[world.dimensions]]
+name = "minecraft:overworld"
+radius = 2000
+path = "dimensions/minecraft/overworld"
+
+[[world.dimensions]]
+name = "minecraft:the_nether"
+radius = 2000
+path = "dimensions/minecraft/the_nether"
+
+[[world.dimensions]]
+name = "minecraft:the_end"
+radius = 2000
+path = "dimensions/minecraft/the_end"
+
+[verify]
+# Diese Kacheln werden von zwei verschiedenen Workern generiert und chunkweise
+# verglichen (Determinismus-Test). Format: "<dimension>|<tx>|<tz>"
+tiles = ["minecraft:overworld|0|0"]
+
+[deploy]
+# Fest vorgegeben, andere Pfade verweigert der Deploy-Befehl.
+volume_world = "{volume_world}"
+# Sicherung der alten Welt als tar vor dem Löschen. Leer = keine Sicherung.
+backup_dir = "/mnt/media/bigworld-backups"
+# Pterodactyl-Panel und Client-API-Key (Konto -> API-Zugangsdaten), erst zum Deploy nötig
+panel_url = ""
+api_key = ""
+server_id = "fd1a91d3"
+owner = "pterodactyl"
+# Konsolenbefehle nach dem Start (z. B. für einen LSS-Backfill)
+post_start_commands = []
+"""
+
+
+def example_config() -> str:
+    return EXAMPLE.format(
+        worker_token=secrets.token_urlsafe(24),
+        admin_token=secrets.token_urlsafe(24),
+        volume_world=ALLOWED_VOLUME_WORLD,
+    )
