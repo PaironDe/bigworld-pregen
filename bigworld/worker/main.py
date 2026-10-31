@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     if changes:
         engine.update_settings(changes)
 
-    print(f"Big-World-Worker {__version__}, Arbeitsordner: {base}")
+    print(f"Big-World-Worker {__version__}, Arbeitsordner: {base}", flush=True)
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     if hasattr(signal, "SIGTERM"):
@@ -59,8 +59,8 @@ def main(argv: list[str] | None = None) -> int:
 
     ui = UI(engine, args.port)
     ui.serve()
-    print(f"Oberfläche: {ui.url}")
-    print("Dieses Fenster offen lassen. Beenden mit Strg+C oder dem Knopf 'Beenden'.")
+    print(f"Oberfläche: {ui.url}", flush=True)
+    print("Dieses Fenster offen lassen. Beenden mit Strg+C oder dem Knopf 'Beenden'.", flush=True)
     if not args.no_browser:
         webbrowser.open(ui.url)
     while not stop.is_set() and not ui.quit.is_set():

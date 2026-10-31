@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import pytest
 
 from bigworld.common import anvil, nbt, package
 from bigworld.common.compare import compare_packages

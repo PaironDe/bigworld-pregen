@@ -1,0 +1,15 @@
+# Optional: Worker dauerhaft auf serversoeren laufen lassen (headless).
+# Für den Testlauf reicht auch ein Start per Hand in tmux.
+[Unit]
+Description=Big World Worker (headless)
+After=network-online.target bigworld-coordinator.service
+Wants=network-online.target
+
+[Service]
+User=soeren
+ExecStart=/opt/bigworld/BigWorldWorker-linux --headless --data-dir /srv/bigworld-worker
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

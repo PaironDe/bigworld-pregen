@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import sys
-import time
 from pathlib import Path
 
 from .. import __version__
@@ -236,7 +235,36 @@ def main(argv: list[str] | None = None) -> int:
     s.set_defaults(fn=cmd_seed)
 
     args = p.parse_args(argv)
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    finally:
+        if args.cmd not in ("init", "seed"):
+            _fix_data_owner(args)
+
+
+def _fix_data_owner(args) -> None:
+    """Mit sudo ausgeführte Befehle dürfen keine root-eigenen Dateien im Datenordner hinterlassen,
+    sonst kann der Dienst (Benutzer bigworld) sie nicht mehr schreiben."""
+    if os.name != "posix" or os.geteuid() != 0:
+        return
+    try:
+        cfg = _cfg(args)
+    except Exception:  # noqa: BLE001
+        return
+    root = cfg.data_dir
+    if not root.is_dir():
+        return
+    st = root.stat()
+    if st.st_uid == 0:
+        return
+    for dirpath, dirs, files in os.walk(root):
+        for name in [*dirs, *files]:
+            path = os.path.join(dirpath, name)
+            try:
+                if os.lstat(path).st_uid == 0:
+                    os.lchown(path, st.st_uid, st.st_gid)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

@@ -211,24 +211,51 @@ def _download(url: str, dest: Path) -> None:
     tmp.replace(dest)
 
 
-def fetch_modrinth(cfg: Config, slug: str, mc: str, log=print) -> Path:
+def fetch_modrinth(cfg: Config, slug: str, mc: str, log=print, with_deps: bool = True,
+                   _seen: set | None = None) -> Path | None:
+    """Lädt die neueste Fabric-Version eines Modrinth-Projekts (und Pflicht-Abhängigkeiten)."""
+    seen = _seen if _seen is not None else set()
+    if slug in seen:
+        return None
+    seen.add(slug)
     q = urllib.parse.urlencode({"loaders": json.dumps(["fabric"]), "game_versions": json.dumps([mc])})
     versions = _get_json(f"https://api.modrinth.com/v2/project/{urllib.parse.quote(slug)}/version?{q}")
     if not versions:
         raise BundleError(f"Keine Fabric-Version von {slug} für Minecraft {mc} auf Modrinth")
     releases = [v for v in versions if v.get("version_type") == "release"] or versions
     v = releases[0]
+    seen.add(v["project_id"])
     f = next((x for x in v["files"] if x.get("primary")), v["files"][0])
     dest_dir = cfg.bundle_src / "mods"
     dest_dir.mkdir(parents=True, exist_ok=True)
+    existing = {mod_info(j)["id"]: j for j in dest_dir.glob("*.jar")}
     dest = dest_dir / f["filename"]
     _download(f["url"], dest)
     sha512 = hashlib.sha512(dest.read_bytes()).hexdigest()
     if sha512 != f["hashes"].get("sha512"):
         dest.unlink()
         raise BundleError(f"Prüfsumme von {f['filename']} stimmt nicht")
+    mid = mod_info(dest)["id"]
+    if mid and mid in existing and existing[mid].name != dest.name:
+        log(f"{slug}: {existing[mid].name} ersetzt durch {dest.name}")
+        existing[mid].unlink()
+    log(f"{slug} {v['version_number']} ({v.get('version_type')}) -> {dest.name}")
+    if with_deps:
+        for dep in v.get("dependencies", []):
+            if dep.get("dependency_type") != "required" or not dep.get("project_id"):
+                continue
+            if dep["project_id"] in seen:
+                continue
+            project = _get_json(f"https://api.modrinth.com/v2/project/{dep['project_id']}")
+            dep_slug = project["slug"]
+            have = {mod_info(j)["id"] for j in dest_dir.glob("*.jar")}
+            if dep_slug in have or dep_slug.replace("-", "_") in have:
+                log(f"  Abhängigkeit {dep_slug} schon vorhanden")
+                seen.add(dep["project_id"])
+                continue
+            log(f"  Abhängigkeit {dep_slug} wird geladen")
+            fetch_modrinth(cfg, dep_slug, mc, log, True, seen)
     _fix_owner(cfg, dest_dir)
-    log(f"{slug} {v['version_number']} -> {dest}")
     return dest
 
 

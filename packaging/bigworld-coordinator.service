@@ -1,0 +1,25 @@
+[Unit]
+Description=Big World Koordinator (verteilte Weltgenerierung)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+User=bigworld
+Group=bigworld
+Environment=BIGWORLD_CONFIG=/etc/bigworld/coordinator.toml
+ExecStart=/opt/bigworld/venv/bin/bigworld-coord serve
+# Startet neu, falls die Tailscale-IP beim Booten noch nicht da ist
+Restart=on-failure
+RestartSec=10
+
+# Härtung: darf nur in /srv/bigworld schreiben
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/srv/bigworld
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target
