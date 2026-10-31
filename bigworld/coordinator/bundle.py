@@ -242,7 +242,13 @@ def fetch_modrinth(cfg: Config, slug: str, mc: str, log=print, with_deps: bool =
     log(f"{slug} {v['version_number']} ({v.get('version_type')}) -> {dest.name}")
     if with_deps:
         for dep in v.get("dependencies", []):
-            if dep.get("dependency_type") != "required" or not dep.get("project_id"):
+            if dep.get("dependency_type") != "required":
+                continue
+            if not dep.get("project_id") and dep.get("version_id"):
+                # Manche Mods geben nur die Versions-ID an
+                dep["project_id"] = _get_json(f"https://api.modrinth.com/v2/version/{dep['version_id']}")["project_id"]
+            if not dep.get("project_id"):
+                log(f"  Abhängigkeit ohne Projekt-ID übersprungen: {dep}")
                 continue
             if dep["project_id"] in seen:
                 continue
