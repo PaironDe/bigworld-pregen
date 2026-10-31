@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bigworld-pregen"
+version = "0.1.0"
+description = "Verteilte Weltgenerierung für den Minecraft-Server Big World"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+coordinator = ["fastapi>=0.110", "uvicorn>=0.29"]
+dev = ["pytest", "httpx", "fastapi>=0.110", "uvicorn>=0.29", "pyinstaller>=6"]
+
+[project.scripts]
+bigworld-coord = "bigworld.coordinator.cli:main"
+bigworld-worker = "bigworld.worker.main:main"
+
+[tool.setuptools.packages.find]
+include = ["bigworld*"]
+
+[tool.setuptools.package-data]
+bigworld = ["web/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

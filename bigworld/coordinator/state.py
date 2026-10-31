@@ -241,6 +241,13 @@ class State:
     def _timeout(self) -> float:
         return self.cfg.lease_timeout_minutes * 60
 
+    # Template --------------------------------------------------------------
+    def template_sha(self, bundle_hash: str) -> str | None:
+        return self.setting(f"template:{bundle_hash}")
+
+    def set_template(self, bundle_hash: str, sha: str) -> None:
+        self.set_setting(f"template:{bundle_hash}", sha)
+
     def acquire(self, wid: str, bundle_hash: str, current_bundle: str | None) -> dict:
         if not current_bundle:
             raise StateError("Auf dem Koordinator ist noch kein Bundle gebaut", 503)
@@ -255,10 +262,23 @@ class State:
             self.expire_leases()
             if self.paused:
                 return {"wait": True, "reason": "Generierung ist pausiert"}
-            # Eine eventuell noch laufende eigene Lease zurückgeben (Neustart des Workers)
-            own = self.q("SELECT * FROM leases WHERE worker_id=? AND status='active'", wid)
+            # Eine eventuell noch laufende eigene Lease zurückgeben (Neustart des Workers).
+            # Leases, deren Ergebnis gerade hochgeladen wird, zählen nicht: der Worker
+            # generiert währenddessen schon die nächste Kachel.
+            own = self.q(
+                "SELECT * FROM leases WHERE worker_id=? AND status='active' AND COALESCE(phase,'')!='upload' "
+                "ORDER BY created",
+                wid,
+            )
             if own:
                 return self._lease_response(own[0])
+
+            # Ohne Vorlage-Welt für dieses Bundle wird zuerst die Vorlage erzeugt
+            if not self.template_sha(bundle_hash):
+                running = self.q("SELECT 1 FROM leases WHERE kind='template' AND status='active'")
+                if running:
+                    return {"wait": True, "reason": "Vorlage-Welt wird gerade von einem anderen Worker erzeugt"}
+                return self._create_lease(wid, "template", "template", bundle_hash)
 
             verify = self._pick_verify(wid)
             if verify:
@@ -317,15 +337,22 @@ class State:
         return self._lease_response(self.q("SELECT * FROM leases WHERE id=?", lid)[0])
 
     def _lease_response(self, lease: sqlite3.Row) -> dict:
-        tile = self.tile(lease["tile_key"])
-        return {
+        out = {
             "lease_id": lease["id"],
             "kind": lease["kind"],
-            "tile": tile.to_dict(),
-            "dim_path": self.cfg.dimension(tile.dim).path,
+            "bundle_hash": lease["bundle_hash"],
             "expires_in": int(lease["expires"] - now()),
             "heartbeat_seconds": 30,
         }
+        if lease["kind"] == "template":
+            return out
+        tile = self.tile(lease["tile_key"])
+        out.update({
+            "tile": tile.to_dict(),
+            "dim_path": self.cfg.dimension(tile.dim).path,
+            "template_sha256": self.template_sha(lease["bundle_hash"]),
+        })
+        return out
 
     def lease(self, lid: str) -> sqlite3.Row:
         rows = self.q("SELECT * FROM leases WHERE id=?", lid)
@@ -341,9 +368,14 @@ class State:
             if lease["worker_id"] != wid:
                 raise StateError("Lease gehört einem anderen Worker", 403)
             if lease["status"] == "expired":
-                # Kurz weg gewesen: wiederbeleben, wenn die Kachel noch frei ist
-                tile_row = self.q("SELECT status FROM tiles WHERE key=?", lease["tile_key"])[0]
-                if lease["kind"] == "verify" or tile_row["status"] == "pending":
+                # Kurz weg gewesen: wiederbeleben, wenn die Arbeit noch frei ist
+                if lease["kind"] == "template":
+                    free = not self.template_sha(lease["bundle_hash"]) and not self.q(
+                        "SELECT 1 FROM leases WHERE kind='template' AND status='active'")
+                else:
+                    tile_row = self.q("SELECT status FROM tiles WHERE key=?", lease["tile_key"])[0]
+                    free = lease["kind"] == "verify" or tile_row["status"] == "pending"
+                if free:
                     self.x("UPDATE leases SET status='active' WHERE id=?", lid)
                     if lease["kind"] == "gen":
                         self.x("UPDATE tiles SET status='leased' WHERE key=?", lease["tile_key"])
@@ -384,6 +416,12 @@ class State:
                 if failed and attempts >= 5:
                     self.x("UPDATE tiles SET status='failed' WHERE key=?", lease["tile_key"])
 
+    def finish_template(self, lease: sqlite3.Row, sha: str) -> None:
+        with self.lock:
+            self.set_template(lease["bundle_hash"], sha)
+            self.x("UPDATE leases SET status='completed', phase='done', progress=1, updated=? WHERE id=?",
+                   now(), lease["id"])
+
     def touch_upload(self, lid: str) -> None:
         self.x("UPDATE leases SET expires=?, updated=?, phase='upload' WHERE id=? AND status='active'",
                now() + self._timeout(), now(), lid)
@@ -400,6 +438,11 @@ class State:
                 raise StateError(f"Lease ist {lease['status']}", 409)
             if lease["kind"] == "verify":
                 return lease, "verify"
+            if lease["kind"] == "template":
+                if self.template_sha(lease["bundle_hash"]):
+                    self.x("UPDATE leases SET status='superseded', updated=? WHERE id=?", now(), lid)
+                    return lease, "duplicate"
+                return lease, "template"
             st = self.q("SELECT status FROM tiles WHERE key=?", lease["tile_key"])[0]["status"]
             if st in ("done", "merging"):
                 self.x("UPDATE leases SET status='superseded', updated=? WHERE id=?", now(), lid)
@@ -465,8 +508,12 @@ class State:
         return {r["bundle_hash"] for r in self.q("SELECT DISTINCT bundle_hash FROM tiles WHERE status='done'")}
 
     # Status -----------------------------------------------------------------
-    def status(self) -> dict:
+    def status(self, bundle_hash: str | None = None) -> dict:
         with self.lock:
+            template = {"sha256": self.template_sha(bundle_hash) if bundle_hash else None}
+            tl = self.q("SELECT l.*, w.name FROM leases l LEFT JOIN workers w ON w.id=l.worker_id "
+                        "WHERE l.kind='template' AND l.status='active'")
+            template["running_on"] = tl[0]["name"] if tl else None
             self.expire_leases()
             t = now()
             workers = {r["id"]: r for r in self.q("SELECT * FROM workers")}
@@ -502,7 +549,9 @@ class State:
             workers_out = []
             total_cps = 0.0
             for w in workers.values():
-                lease = next((l for l in active if l["worker_id"] == w["id"]), None)
+                mine = [l for l in active if l["worker_id"] == w["id"]]
+                lease = next((l for l in mine if l["phase"] != "upload"), mine[0] if mine else None)
+                uploads = sum(1 for l in mine if l["phase"] == "upload")
                 online = t - (w["last_seen"] or 0) < 120
                 cps = lease["cps"] if lease and online else 0
                 total_cps += cps or 0
@@ -519,6 +568,7 @@ class State:
                     "progress": lease["progress"] if lease else None,
                     "cps": cps, "eta": lease["eta"] if lease else None,
                     "message": lease["message"] if lease else None,
+                    "uploads": uploads,
                 })
             remaining = totals["chunks_total"] - totals["chunks_done"] - totals["chunks_running"]
             totals["cps"] = total_cps
@@ -548,6 +598,7 @@ class State:
                     for r in self.q("SELECT tile_key, worker_id FROM verify_copies")
                 ],
                 "totals": totals,
+                "template": template,
                 "paused": self.paused,
                 "warnings": warnings,
                 "time": t,

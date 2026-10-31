@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import tarfile
 import threading
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from .. import PROTOCOL_VERSION, __version__
 from ..common.hashing import sha256_file
-from . import bundle, merge
+from . import bundle, merge, template
 from .config import Config
 from .state import State, StateError
 
@@ -133,6 +134,15 @@ def create_app(cfg: Config, state: State | None = None) -> FastAPI:
             raise HTTPException(404, "Datei nicht im Bundle")
         return FileResponse(p, media_type="application/octet-stream")
 
+    @app.get("/api/v1/template/{bundle_hash}")
+    def template_file(bundle_hash: str, _=Depends(require_worker)):
+        if not all(c in "0123456789abcdef" for c in bundle_hash):
+            raise HTTPException(400, "Ungültiger Hash")
+        p = template.template_tar(cfg, bundle_hash)
+        if not p.is_file():
+            raise HTTPException(404, "Keine Vorlage für dieses Bundle")
+        return FileResponse(p, media_type="application/x-tar")
+
     # Worker ----------------------------------------------------------------------
     @app.post("/api/v1/workers/register")
     def register(body: RegisterBody, _=Depends(require_worker)):
@@ -208,6 +218,16 @@ def create_app(cfg: Config, state: State | None = None) -> FastAPI:
         if action == "duplicate":
             tar_path.unlink()
             return {"ok": True, "result": "duplicate"}
+        if action == "template":
+            try:
+                sha, names = template.store(cfg, lease["bundle_hash"], tar_path)
+            except (ValueError, tarfile.TarError) as e:
+                state.release(body.worker_id, lid, f"Vorlage ungültig: {e}", failed=True)
+                tar_path.unlink(missing_ok=True)
+                raise HTTPException(422, f"Vorlage ungültig: {e}")
+            state.finish_template(lease, sha)
+            log.info("Vorlage-Welt für Bundle %s gespeichert: %s", lease["bundle_hash"][:12], ", ".join(names))
+            return {"ok": True, "result": "template-stored", "files": names}
         if action == "verify":
             try:
                 merge.keep_verify_copy(cfg, state, lease, tar_path)
@@ -222,8 +242,9 @@ def create_app(cfg: Config, state: State | None = None) -> FastAPI:
     # Status und Verwaltung -----------------------------------------------------
     @app.get("/api/v1/status")
     def status(_=Depends(require_worker)):
-        s = state.status()
-        s["bundle"] = bundle.current_hash(cfg)
+        h = bundle.current_hash(cfg)
+        s = state.status(h)
+        s["bundle"] = h
         return s
 
     @app.post("/api/v1/priorities/preview")

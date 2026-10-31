@@ -72,6 +72,41 @@ class Panel:
         return False
 
 
+def patch_lss_generation(path: Path) -> bool:
+    """Setzt in der LSS-YAML 'generation: enabled: false'. Ändert sonst nichts.
+
+    Absichtlich ohne YAML-Bibliothek: Zeilenweise innerhalb des Blocks
+    'generation:', damit Kommentare und Formatierung erhalten bleiben.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    in_block = False
+    block_indent = 0
+    changed = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip(" "))
+        if not stripped or stripped.startswith("#"):
+            continue
+        if in_block and indent <= block_indent:
+            in_block = False
+        if stripped.rstrip() == "generation:" or stripped.startswith("generation:") and stripped.endswith(":"):
+            in_block = True
+            block_indent = indent
+            continue
+        if in_block and stripped.startswith("enabled:"):
+            prefix = line[: line.index("enabled:")]
+            comment = ""
+            if "#" in stripped:
+                comment = "  #" + stripped.split("#", 1)[1]
+            newline = "\n" if line.endswith("\n") else ""
+            lines[i] = f"{prefix}enabled: false{comment}{newline}"
+            changed = True
+            in_block = False
+    if changed:
+        path.write_text("".join(lines), encoding="utf-8")
+    return changed
+
+
 def _du(path: Path) -> int:
     total = 0
     for dirpath, _, files in os.walk(path):
@@ -175,6 +210,16 @@ def run(cfg: Config, state: State, allow_incomplete: bool, ask=input, log=print)
         os.chown(dirpath, uid, gid)
         for n in files:
             os.chown(os.path.join(dirpath, n), uid, gid)
+
+    if cfg.deploy.lss_config:
+        lss = vol_world.parent / cfg.deploy.lss_config
+        if lss.is_file():
+            if patch_lss_generation(lss):
+                log(f"   {cfg.deploy.lss_config}: generation.enabled auf false gesetzt")
+            else:
+                log(f"   WARNUNG: generation.enabled in {lss} nicht gefunden, bitte von Hand prüfen")
+        else:
+            log(f"   WARNUNG: {lss} existiert nicht, LSS-Config nicht angepasst")
 
     log("6/6 Server starten ...")
     panel.power("start")

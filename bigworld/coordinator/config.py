@@ -29,6 +29,7 @@ class DeployConfig:
     api_key: str = ""
     server_id: str = "fd1a91d3"
     owner: str = "pterodactyl"
+    lss_config: str = "config/lss-server-config.yaml"
     post_start_commands: list[str] = field(default_factory=list)
 
 
@@ -99,6 +100,7 @@ def load(path: str | os.PathLike | None = None) -> Config:
         api_key=dep.get("api_key", ""),
         server_id=dep.get("server_id", "fd1a91d3"),
         owner=dep.get("owner", "pterodactyl"),
+        lss_config=dep.get("lss_config", "config/lss-server-config.yaml"),
         post_start_commands=list(dep.get("post_start_commands", [])),
     )
     for name in ("worker_token", "admin_token"):
@@ -179,6 +181,8 @@ panel_url = ""
 api_key = ""
 server_id = "fd1a91d3"
 owner = "pterodactyl"
+# LSS-Config relativ zum Server-Ordner; der Deploy setzt dort generation.enabled: false
+lss_config = "config/lss-server-config.yaml"
 # Konsolenbefehle nach dem Start (z. B. für einen LSS-Backfill)
 post_start_commands = []
 """

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Big World Worker</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>Big World · Worker</h1>
+  <span class="sub" id="sub"></span>
+  <span style="flex:1"></span>
+  <button id="quitBtn" title="Worker beenden (laufende Kachel wird freigegeben)">Beenden</button>
+</header>
+<main>
+  <div class="grid2">
+    <div style="display:grid; gap:16px; align-content:start">
+      <div class="card">
+        <div class="row" style="justify-content:space-between; align-items:center">
+          <div>
+            <div style="font-size:20px; font-weight:650" id="phase">–</div>
+            <div class="muted" id="message"></div>
+          </div>
+          <button class="huge primary" id="goBtn">Generieren</button>
+        </div>
+        <div class="bar big"><div id="bar" style="width:0"></div></div>
+        <div class="stats" style="margin-top:12px">
+          <div class="stat"><div class="v" id="tile">–</div><div class="l">aktuelle Kachel</div></div>
+          <div class="stat"><div class="v" id="cps">–</div><div class="l">Chunks/s</div></div>
+          <div class="stat"><div class="v" id="eta">–</div><div class="l">Restzeit Kachel</div></div>
+          <div class="stat"><div class="v" id="done">0</div><div class="l">hochgeladen (diese Sitzung)</div></div>
+        </div>
+        <div class="muted" id="upload" style="margin-top:8px"></div>
+        <div class="err" id="error" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card">
+        <h2>Gesamte Welt</h2>
+        <div class="tabs" id="dimTabs"></div>
+        <canvas class="map" id="map" style="height:420px"></canvas>
+        <div class="legend">
+          <span style="--c:var(--st-pending)">offen</span>
+          <span style="--c:var(--st-leased)">in Arbeit</span>
+          <span style="--c:var(--st-done)">fertig</span>
+          <span style="--c:var(--st-priority)">Priorität</span>
+        </div>
+        <div class="muted" id="mapInfo" style="margin-top:6px"></div>
+        <div id="prioBox" class="form hidden" style="margin-top:12px">
+          <div class="coords">
+            <label>x von<input id="px0" type="number"></label>
+            <label>z von<input id="pz0" type="number"></label>
+            <label>x bis<input id="px1" type="number"></label>
+            <label>z bis<input id="pz1" type="number"></label>
+          </div>
+          <div class="row">
+            <button id="selectBtn">Auf Karte aufziehen</button>
+            <button class="primary" id="addPrio">Als Nächstes generieren</button>
+            <span class="muted" id="prioMsg"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid; gap:16px; align-content:start">
+      <div class="card form">
+        <h2>Einstellungen</h2>
+        <label>Koordinator-Adresse<input id="s_url"></label>
+        <label>Token (von Sören)<input id="s_token" type="password" placeholder="unverändert lassen"></label>
+        <label>Name dieses PCs<input id="s_name"></label>
+        <label>Arbeitsspeicher für Minecraft (GB)<input id="s_ram" type="number" min="4" max="64"></label>
+        <details>
+          <summary class="muted">Erweitert</summary>
+          <div class="form" style="margin-top:8px">
+            <label>Admin-Token (nur für Prioritäten)<input id="s_admin" type="password" placeholder="unverändert lassen"></label>
+            <label>Eigenes Java 25 (leer = automatisch)<input id="s_java"></label>
+            <label>Zusätzliche JVM-Argumente<input id="s_jvm"></label>
+          </div>
+        </details>
+        <div class="row"><button id="saveBtn">Speichern</button><span class="muted" id="saveMsg"></span></div>
+        <div class="muted" style="font-size:12px">Mit „Generieren“ akzeptierst du die
+          <a href="https://www.minecraft.net/eula" target="_blank" rel="noopener">Minecraft-EULA</a> für den lokalen Server.
+          Das Fenster muss offen bleiben, solange generiert wird.</div>
+      </div>
+      <div class="card">
+        <h2>Protokoll</h2>
+        <div class="log" id="log"></div>
+      </div>
+    </div>
+  </div>
+</main>
+<script src="/static/map.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+let key = new URLSearchParams(location.search).get("k") || "";
+try { if (key) sessionStorage.setItem("bw-key", key); else key = sessionStorage.getItem("bw-key") || ""; } catch (e) {}
+let state = null, settingsFilled = false;
+
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: { "X-Key": key, "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
+  return j;
+}
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+$("goBtn").onclick = async () => {
+  try { await api(state && state.running ? "/api/stop" : "/api/start", {}); } catch (e) { $("error").textContent = e.message; }
+  poll();
+};
+$("quitBtn").onclick = async () => {
+  if (!confirm("Worker beenden? Eine laufende Kachel wird freigegeben, fertige Uploads gehen beim nächsten Start weiter.")) return;
+  await api("/api/quit", {}).catch(() => {});
+  document.body.innerHTML = "<main><div class='card'>Worker beendet. Dieses Fenster kann geschlossen werden.</div></main>";
+};
+$("saveBtn").onclick = async () => {
+  try {
+    await api("/api/settings", {
+      coordinator_url: $("s_url").value.trim(), token: $("s_token").value.trim(), name: $("s_name").value.trim(),
+      ram_gb: parseInt($("s_ram").value, 10), admin_token: $("s_admin").value.trim(),
+      java_path: $("s_java").value.trim(), extra_jvm_args: $("s_jvm").value.trim(),
+    });
+    $("s_token").value = ""; $("s_admin").value = "";
+    $("saveMsg").textContent = "gespeichert";
+    setTimeout(() => ($("saveMsg").textContent = ""), 2000);
+    settingsFilled = false;
+    poll();
+  } catch (e) { $("saveMsg").textContent = e.message; }
+};
+
+const map = new BigWorldMap($("map"), {
+  onSelect: (s) => {
+    $("px0").value = s.x0; $("pz0").value = s.z0; $("px1").value = s.x1; $("pz1").value = s.z1;
+    map.setSelectMode(false); $("selectBtn").classList.remove("active");
+  },
+});
+$("selectBtn").onclick = () => { map.setSelectMode(!map.selectMode); $("selectBtn").classList.toggle("active", map.selectMode); };
+$("addPrio").onclick = async () => {
+  const v = (id) => parseInt($(id).value, 10);
+  const b = { dim: map.dim, x0: v("px0"), z0: v("pz0"), x1: v("px1"), z1: v("pz1"), label: "vom Worker" };
+  if ([b.x0, b.z0, b.x1, b.z1].some(Number.isNaN)) { $("prioMsg").textContent = "Alle vier Werte angeben"; return; }
+  try { await api("/api/priority", b); $("prioMsg").textContent = "priorisiert"; map.setSelection(null); pollMap(); }
+  catch (e) { $("prioMsg").textContent = e.message; }
+};
+
+function render() {
+  const s = state;
+  $("sub").textContent = `Version ${s.version}${s.simulate ? " · SIMULATION" : ""}${s.bundle ? " · Bundle " + s.bundle.slice(0, 12) : ""}`;
+  $("phase").textContent = s.phase_label;
+  $("message").textContent = s.message && s.message !== s.phase_label ? s.message : "";
+  $("goBtn").textContent = s.running ? "Stoppen" : "Generieren";
+  $("goBtn").classList.toggle("primary", !s.running);
+  $("goBtn").classList.toggle("danger", s.running);
+  $("bar").style.width = (100 * (s.progress || 0)) + "%";
+  $("tile").textContent = s.tile || "–";
+  $("cps").textContent = s.cps ? s.cps.toFixed(1) : "–";
+  $("eta").textContent = s.eta ? bwDuration(s.eta) : "–";
+  $("done").textContent = s.tiles_done;
+  const up = s.upload ? `Upload ${esc(s.upload.tile)}: ${(100 * s.upload.done / s.upload.total).toFixed(0)} % von ${(s.upload.total / 1e6).toFixed(0)} MB` : "";
+  $("upload").innerHTML = up + (s.outbox.length ? `${up ? " · " : ""}${s.outbox.length} Paket(e) im Upload-Ausgang` : "");
+  $("error").textContent = s.last_error ? "Letzter Fehler: " + s.last_error : "";
+  if (!settingsFilled) {
+    const st = s.settings;
+    $("s_url").value = st.coordinator_url; $("s_name").value = st.name; $("s_ram").value = st.ram_gb;
+    $("s_java").value = st.java_path; $("s_jvm").value = st.extra_jvm_args;
+    $("s_token").placeholder = st.token ? "gesetzt (leer lassen = unverändert)" : "fehlt";
+    $("s_admin").placeholder = st.admin_token ? "gesetzt (leer lassen = unverändert)" : "optional";
+    $("prioBox").classList.toggle("hidden", !st.admin_token);
+    settingsFilled = true;
+  }
+  const logEl = $("log");
+  const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
+  logEl.textContent = s.log.join("\n");
+  if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+}
+
+async function poll() {
+  try { state = await api("/api/state"); render(); }
+  catch (e) { $("phase").textContent = "Worker nicht erreichbar"; $("message").textContent = e.message; }
+}
+
+async function pollMap() {
+  try {
+    const st = await api("/api/coord-status");
+    const tabs = $("dimTabs");
+    if (tabs.children.length !== st.dimensions.length) {
+      tabs.innerHTML = "";
+      st.dimensions.forEach((d) => {
+        const b = document.createElement("button");
+        b.textContent = d.name.replace("minecraft:", "").replace("the_", "");
+        b.dataset.dim = d.name;
+        b.onclick = () => { map.setDim(d.name); [...tabs.children].forEach((x) => x.classList.toggle("active", x === b)); };
+        tabs.appendChild(b);
+      });
+      tabs.children[0].classList.add("active");
+    }
+    map.setStatus(st);
+    const t = st.totals;
+    $("mapInfo").textContent = `${(100 * t.chunks_done / Math.max(1, t.chunks_total)).toFixed(1)} % der Welt fertig · ` +
+      `${st.workers.filter((w) => w.online).length} Worker online · ${t.cps.toFixed(1)} Chunks/s gesamt · Restzeit ${bwDuration(t.eta_seconds)}`;
+  } catch (e) { $("mapInfo").textContent = "Karte: " + e.message; }
+}
+
+poll(); pollMap();
+setInterval(poll, 2000);
+setInterval(pollMap, 10000);
+</script>
+</body>
+</html>

@@ -22,10 +22,14 @@ _merge_lock = threading.Lock()
 
 
 def init_staging(cfg: Config, bundle_hash: str) -> None:
-    """Template-Dateien (level.dat, datapacks, Weltgen-Einstellungen) in die Staging-Welt legen."""
+    """Vorlage-Welt (level.dat, datapacks, data/) in die Staging-Welt legen."""
+    from .template import template_dir
+
     world = cfg.staging_world
     world.mkdir(parents=True, exist_ok=True)
-    src = cfg.bundles_dir / bundle_hash / "files" / "template"
+    src = template_dir(cfg, bundle_hash) / "world"
+    if not (src / "level.dat").is_file():
+        raise ValueError("Für dieses Bundle gibt es noch keine Vorlage-Welt")
     for p in sorted(src.rglob("*")):
         if p.is_file():
             target = world / p.relative_to(src)

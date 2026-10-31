@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Big World Generierung</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>Big World · Weltgenerierung</h1>
+  <span class="sub" id="sub">verbinde …</span>
+  <span style="flex:1"></span>
+  <button id="pauseBtn" class="hidden"></button>
+  <button id="logoutBtn">Token ändern</button>
+</header>
+
+<main id="login" class="hidden">
+  <div class="card form" style="max-width:420px">
+    <h2>Anmelden</h2>
+    <label>Token (Worker- oder Admin-Token aus coordinator.toml)
+      <input id="tokenInput" type="password" autocomplete="off"></label>
+    <button class="primary" id="loginBtn">Anmelden</button>
+    <div class="err" id="loginErr"></div>
+  </div>
+</main>
+
+<main id="app" class="hidden">
+  <div id="warnings"></div>
+  <div class="card">
+    <div class="stats">
+      <div class="stat"><div class="v" id="pct">–</div><div class="l">fertig</div></div>
+      <div class="stat"><div class="v" id="chunks">–</div><div class="l">Chunks</div></div>
+      <div class="stat"><div class="v" id="cps">–</div><div class="l">Chunks/s gesamt</div></div>
+      <div class="stat"><div class="v" id="eta">–</div><div class="l">Restzeit (geschätzt)</div></div>
+      <div class="stat"><div class="v" id="tiles">–</div><div class="l">Kacheln fertig</div></div>
+      <div class="stat"><div class="v" id="tmpl">–</div><div class="l">Vorlage-Welt</div></div>
+    </div>
+    <div class="bar"><div id="bar" style="width:0"></div></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>Karte</h2>
+      <div class="tabs" id="dimTabs"></div>
+      <div class="mapwrap"><canvas class="map" id="map"></canvas></div>
+      <div class="legend">
+        <span style="--c:var(--st-pending)">offen</span>
+        <span style="--c:var(--st-leased)">in Arbeit (Füllung = Fortschritt)</span>
+        <span style="--c:var(--st-merging)">wird zusammengeführt</span>
+        <span style="--c:var(--st-done)">fertig</span>
+        <span style="--c:var(--st-failed)">fehlgeschlagen</span>
+        <span style="--c:var(--st-priority)">Priorität</span>
+        <span class="muted">gestrichelt = Vergleichskachel · Mausrad zoomt, Ziehen verschiebt</span>
+      </div>
+    </div>
+
+    <div style="display:grid; gap:16px; align-content:start">
+      <div class="card form" id="prioCard">
+        <h2>Bereich als Nächstes generieren</h2>
+        <div class="coords">
+          <label>x von<input id="px0" type="number"></label>
+          <label>z von<input id="pz0" type="number"></label>
+          <label>x bis<input id="px1" type="number"></label>
+          <label>z bis<input id="pz1" type="number"></label>
+        </div>
+        <label>Bezeichnung (optional)<input id="plabel" placeholder="z. B. Spawn-Stadt"></label>
+        <div class="row">
+          <button id="selectBtn">Auf Karte aufziehen</button>
+          <button class="primary" id="addPrio">Priorisieren</button>
+        </div>
+        <div class="muted" id="preview">Der Bereich wird auf ganze Kacheln (2.048 Blöcke) aufgerundet.</div>
+        <div class="err" id="prioErr"></div>
+        <div id="prioList"></div>
+      </div>
+
+      <div class="card" id="verifyCard">
+        <h2>Determinismus-Test</h2>
+        <div id="verify" class="muted">Noch kein Vergleich.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Worker</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Name</th><th>GPU / Treiber</th><th>Aufgabe</th><th>Fortschritt</th><th>Chunks/s</th><th>Restzeit Kachel</th><th>Fertig</th><th>Meldung</th></tr></thead>
+      <tbody id="workers"></tbody>
+    </table></div>
+  </div>
+</main>
+
+<script src="/static/map.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+let token = "";
+try { token = localStorage.getItem("bw-token") || ""; } catch (e) {}
+let isAdmin = false;
+let status = null;
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, {
+    ...opts,
+    headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json", ...(opts.headers || {}) },
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || ("HTTP " + r.status));
+  return body;
+}
+
+function showLogin(msg) {
+  $("app").classList.add("hidden");
+  $("login").classList.remove("hidden");
+  $("loginErr").textContent = msg || "";
+}
+
+$("loginBtn").onclick = async () => {
+  token = $("tokenInput").value.trim();
+  try { localStorage.setItem("bw-token", token); } catch (e) {}
+  start();
+};
+$("logoutBtn").onclick = () => { try { localStorage.removeItem("bw-token"); } catch (e) {} token = ""; showLogin(); };
+
+const map = new BigWorldMap($("map"), {
+  onSelect: (s) => {
+    $("px0").value = s.x0; $("pz0").value = s.z0; $("px1").value = s.x1; $("pz1").value = s.z1;
+    toggleSelect(false);
+    preview();
+  },
+});
+
+function toggleSelect(on) {
+  map.setSelectMode(on);
+  $("selectBtn").classList.toggle("active", on);
+}
+$("selectBtn").onclick = () => toggleSelect(!map.selectMode);
+
+function prioBody() {
+  const v = (id) => parseInt($(id).value, 10);
+  const b = { dim: map.dim, x0: v("px0"), z0: v("pz0"), x1: v("px1"), z1: v("pz1"), label: $("plabel").value };
+  if ([b.x0, b.z0, b.x1, b.z1].some(Number.isNaN)) return null;
+  return b;
+}
+async function preview() {
+  const b = prioBody();
+  if (!b) return;
+  map.setSelection(b);
+  try {
+    const r = await api("/api/v1/priorities/preview", { method: "POST", body: JSON.stringify(b) });
+    $("preview").textContent = `Betrifft ${r.tiles.length} Kachel(n). Laufende Kacheln werden nicht abgebrochen.`;
+  } catch (e) { $("preview").textContent = e.message; }
+}
+["px0", "pz0", "px1", "pz1"].forEach((id) => $(id).addEventListener("change", preview));
+
+$("addPrio").onclick = async () => {
+  const b = prioBody();
+  $("prioErr").textContent = "";
+  if (!b) { $("prioErr").textContent = "Bitte alle vier Koordinaten angeben."; return; }
+  try {
+    await api("/api/v1/priorities", { method: "POST", body: JSON.stringify(b) });
+    map.setSelection(null);
+    refresh();
+  } catch (e) { $("prioErr").textContent = e.message; }
+};
+
+async function delPrio(id) { await api("/api/v1/priorities/" + id, { method: "DELETE" }); refresh(); }
+async function movePrio(id, dir) {
+  const ids = status.priorities.map((p) => p.id);
+  const i = ids.indexOf(id), j = i + dir;
+  if (j < 0 || j >= ids.length) return;
+  [ids[i], ids[j]] = [ids[j], ids[i]];
+  await api("/api/v1/priorities/reorder", { method: "POST", body: JSON.stringify({ ids }) });
+  refresh();
+}
+window.delPrio = delPrio; window.movePrio = movePrio;
+
+$("pauseBtn").onclick = async () => {
+  await api("/api/v1/pause", { method: "POST", body: JSON.stringify({ paused: !status.paused }) });
+  refresh();
+};
+
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function shortDim(d) { return d.replace("minecraft:", "").replace("the_", ""); }
+
+function render() {
+  const t = status.totals;
+  const pct = t.chunks_total ? (100 * t.chunks_done / t.chunks_total) : 0;
+  $("sub").textContent = `Bundle ${status.bundle ? status.bundle.slice(0, 12) : "fehlt"} · ${status.paused ? "pausiert" : "läuft"}`;
+  $("pct").textContent = pct.toFixed(1) + " %";
+  $("chunks").textContent = `${t.chunks_done.toLocaleString("de")} / ${t.chunks_total.toLocaleString("de")}`;
+  $("cps").textContent = t.cps.toFixed(1);
+  $("eta").textContent = bwDuration(t.eta_seconds);
+  $("tiles").textContent = `${t.tiles.done || 0} / ${status.tiles.length}`;
+  $("tmpl").textContent = status.template.sha256 ? "da" : (status.template.running_on ? "läuft" : "fehlt");
+  $("bar").style.width = pct + "%";
+
+  $("warnings").innerHTML = status.warnings.map((w) => `<div class="card warn">${esc(w)}</div>`).join("");
+
+  $("pauseBtn").classList.toggle("hidden", !isAdmin);
+  $("pauseBtn").textContent = status.paused ? "Fortsetzen" : "Pausieren";
+  $("prioCard").querySelectorAll("button, input").forEach((el) => (el.disabled = !isAdmin));
+
+  const tabs = $("dimTabs");
+  if (tabs.children.length !== status.dimensions.length) {
+    tabs.innerHTML = "";
+    status.dimensions.forEach((d) => {
+      const b = document.createElement("button");
+      b.textContent = `${shortDim(d.name)} (${d.radius.toLocaleString("de")})`;
+      b.dataset.dim = d.name;
+      b.onclick = () => { map.setDim(d.name); render(); };
+      tabs.appendChild(b);
+    });
+  }
+  [...tabs.children].forEach((b) => b.classList.toggle("active", b.dataset.dim === (map.dim || status.dimensions[0].name)));
+  map.setStatus(status);
+
+  $("prioList").innerHTML = status.priorities.length
+    ? `<table><thead><tr><th>#</th><th>Bereich</th><th></th></tr></thead><tbody>${status.priorities.map((p, i) => `
+      <tr><td>${i + 1}</td><td>${esc(p.label || "")} <span class="muted">${shortDim(p.dim)} x ${p.x0}…${p.x1}, z ${p.z0}…${p.z1}</span></td>
+      <td class="row">${isAdmin ? `<button onclick="movePrio(${p.id},-1)">↑</button><button onclick="movePrio(${p.id},1)">↓</button><button class="danger" onclick="delPrio(${p.id})">✕</button>` : ""}</td></tr>`).join("")}</tbody></table>`
+    : `<div class="muted">Keine Prioritätsbereiche. Ohne Priorität wird von 0,0 aus nach außen generiert.</div>`;
+
+  const vr = status.verify.map((v) => v.error
+      ? `<div class="err">${esc(v.tile)}: Fehler beim Vergleich: ${esc(v.error)}</div>`
+      : `<div><b class="${v.deterministic ? "okc" : "err"}">${v.deterministic ? "Identisch" : "Unterschiede"}</b>
+         ${esc(v.tile)}: ${esc(v.worker_a)} gegen ${esc(v.worker_b)}<br>
+         <span class="muted">${v.chunks_identical + v.chunks_equal_after_ignore} gleich, ${v.chunks_different} verschieden, ${v.chunks_missing} fehlend</span>
+         ${(v.examples || []).slice(0, 5).map((e) => `<div class="muted" style="font-size:12px">${esc(e)}</div>`).join("")}</div>`).join("");
+  const copies = status.verify_copies.map((c) => `${esc(c.tile)}: Kopie von ${esc(c.worker)}`).join("<br>");
+  $("verify").innerHTML = vr || (copies ? `<span class="muted">${copies}<br>Warte auf zweite Generierung.</span>` : "Noch kein Vergleich.");
+
+  $("workers").innerHTML = status.workers.map((w) => `
+    <tr><td><span class="dot ${w.online ? "on" : ""}"></span>${esc(w.name)}<div class="muted" style="font-size:12px">${esc(w.os || "")}</div></td>
+    <td>${esc(w.gpu || "–")}<div class="muted" style="font-size:12px">${esc(w.driver || "")}</div></td>
+    <td>${w.tile ? `${esc(w.kind)} ${esc(w.tile === "template" ? "Vorlage" : w.tile.replace("minecraft:", ""))}<div class="muted" style="font-size:12px">${esc(w.phase || "")}${w.uploads ? ` · ${w.uploads} Upload(s)` : ""}</div>` : "–"}</td>
+    <td>${w.tile ? Math.round(100 * (w.progress || 0)) + " %" : ""}</td>
+    <td>${w.cps ? w.cps.toFixed(1) : ""}</td>
+    <td>${w.eta ? bwDuration(w.eta) : ""}</td>
+    <td>${w.tiles_done}</td>
+    <td class="muted" style="font-size:12px">${esc(w.message || "")}${w.overrides && w.overrides.length ? `<div>Overrides: ${esc(w.overrides.join(", "))}</div>` : ""}</td></tr>`).join("")
+    || `<tr><td colspan="8" class="muted">Noch kein Worker verbunden.</td></tr>`;
+}
+
+async function refresh() {
+  try {
+    status = await api("/api/v1/status");
+    render();
+  } catch (e) {
+    if (/Token/.test(e.message)) showLogin(e.message);
+    else $("sub").textContent = "Fehler: " + e.message;
+  }
+}
+
+async function start() {
+  if (!token) { showLogin(); return; }
+  try {
+    isAdmin = (await api("/api/v1/whoami")).admin;
+  } catch (e) { showLogin(e.message); return; }
+  $("login").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  await refresh();
+}
+start();
+setInterval(() => { if (token && !$("app").classList.contains("hidden")) refresh(); }, 5000);
+</script>
+</body>
+</html>
