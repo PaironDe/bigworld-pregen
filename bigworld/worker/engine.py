@@ -453,6 +453,7 @@ class Engine:
                 pass
             shutil.rmtree(world, ignore_errors=True)
             self.log(f"Kachel {label} fertig, {tar_path.stat().st_size / 1e6:.0f} MB im Upload-Ausgang")
+            self.set_status(last_error=None)  # alter Fehler ist nach einer fertigen Kachel überholt
         except (Aborted, ServerError, ValueError, OSError, tarfile.TarError) as e:
             self._release(c, wid, lid, e)
             if not isinstance(e, Aborted) or self.abort.is_set():
