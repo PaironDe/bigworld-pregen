@@ -136,7 +136,8 @@ def merge_region_set(src_dim: Path, dst_dim: Path, rx: int, rz: int, stats: Merg
             os.replace(tmp, d / name)
             stats.files.append(d / name)
         stats.regions_new += 1
-        stats.chunks_added += sum(1 for i in range(1024) if anvil.RegionFile(src_region).has_chunk(i))
+        src = anvil.RegionFile(src_region)  # einmal lesen, nicht 1024-mal
+        stats.chunks_added += sum(1 for i in range(1024) if src.has_chunk(i))
         return
 
     # Region existiert live: nur fehlende oder unfertige Chunks übernehmen
