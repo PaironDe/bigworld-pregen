@@ -21,12 +21,31 @@ from ..common.tiles import REGION_BLOCKS, Tile
 HEIGHTMAP = "OCEAN_FLOOR"
 
 
-def _bits_for(n_longs: int) -> int | None:
+def _candidate_bits(n_longs: int) -> list[int]:
+    """Alle Bitbreiten, bei denen 256 Werte genau n_longs Longs belegen.
+
+    Bei hohen Welten (z. B. JJThunder) passen mehrere Breiten zur selben Länge
+    (11 und 12 Bit ergeben beide 52 Longs). Welche stimmt, entscheidet _decode_heightmap.
+    """
+    out = []
     for bits in range(1, 33):
         per = 64 // bits
         if -(-256 // per) == n_longs:
-            return bits
-    return None
+            out.append(bits)
+    return out
+
+
+def _decode_heightmap(longs: list[int]) -> list[int] | None:
+    best, best_rough = None, None
+    for bits in _candidate_bits(len(longs)):
+        per, mask = 64 // bits, (1 << bits) - 1
+        vals = [(longs[i // per] >> ((i % per) * bits)) & mask for i in range(256)]
+        # Gelände ist zusammenhängend: die richtige Breite ergibt die glattesten Nachbarwerte
+        rough = sum(abs(vals[i] - vals[i + 1]) for i in range(255) if i % 16 != 15)
+        rough += sum(abs(vals[i] - vals[i + 16]) for i in range(240))
+        if best_rough is None or rough < best_rough:
+            best, best_rough = vals, rough
+    return best
 
 
 class Surface:
@@ -57,10 +76,8 @@ class Surface:
                     import struct
 
                     longs = [x & 0xFFFFFFFFFFFFFFFF for x in struct.unpack(f">{len(raw[1]) // 8}q", raw[1])]
-                    bits = _bits_for(len(longs))
-                    if bits:
-                        per, mask = 64 // bits, (1 << bits) - 1
-                        vals = [(longs[i // per] >> ((i % per) * bits)) & mask for i in range(256)]
+                    vals = _decode_heightmap(longs)
+                    if vals:
                         result = (vals, (ypos if isinstance(ypos, int) else -4) * 16)
         self.chunks[key] = result
         return result

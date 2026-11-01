@@ -30,3 +30,14 @@ def test_seam_step_detected(tmp_path):
     assert segs[0].x == 512 and segs[0].y == 82
     text = seams.summarize(res)
     assert "/tp 512 82 8" in text
+
+
+def test_tall_world_bit_width_ambiguity():
+    # 12 Bit (JJThunder-Höhen) und 11 Bit ergeben beide 52 Longs; Dekodierung muss 12 wählen
+    import random
+
+    random.seed(3)
+    vals = [1500 + (i % 16) + (i // 16) + random.randint(0, 2) for i in range(256)]
+    longs = list(heightmap(vals, bits=12))
+    assert len(longs) == 52
+    assert seams._decode_heightmap([x & 0xFFFFFFFFFFFFFFFF for x in longs]) == vals
