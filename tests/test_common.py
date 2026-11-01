@@ -91,9 +91,11 @@ def test_compare_detects_difference(tmp_path: Path):
         (world / "region").mkdir(parents=True)
         chunks = {i: _chunk(status) for i in range(10)}
         if name == "b":
-            chunks[3] = nbt.dumps({"Status": "minecraft:full", "LastUpdate": nbt.Long(0), "Heights": nbt.IntArray([9])})
+            chunks[3] = nbt.dumps({"Status": "minecraft:full", "LastUpdate": nbt.Long(0), "Heights": nbt.IntArray([9]),
+                                   "sections": [{"Y": 0, "block_states": {"palette": [{"Name": "minecraft:gold_ore"}]}}]})
         anvil.write_region(world / "region" / "r.0.0.mca", chunks)
         package.write_package(tmp_path / f"{name}.tar", {}, package.collect_tile_files(world, "", tile))
     rep = compare_packages(tmp_path / "a.tar", tmp_path / "b.tar")
     assert not rep.deterministic and rep.chunks_different == 1
-    assert "Heights" in rep.examples[0]
+    d = rep.to_dict()
+    assert d["blocks_different"] == 4096 and d["critical"]["blocks"] == 1

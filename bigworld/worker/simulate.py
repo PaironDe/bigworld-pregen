@@ -41,12 +41,15 @@ class FakeGenerator:
     def _chunk(self, cx: int, cz: int) -> bytes:
         h = hashlib.sha256(f"{self.seed}:{cx}:{cz}".encode()).digest()
         heights = nbt.IntArray([b for b in h[:16]])
+        block = "minecraft:stone" if h[0] % 2 else "minecraft:dirt"
         if self.diff and cx % 32 == 7 and cz % 32 == 7:
-            heights = nbt.IntArray([b ^ 1 for b in h[:16]])
+            block = "minecraft:diamond_ore"
         return nbt.dumps({
             "Status": "minecraft:full", "xPos": cx, "zPos": cz,
             "LastUpdate": nbt.Long(int(time.time())), "InhabitedTime": nbt.Long(0),
             "Heights": heights,
+            "sections": [{"Y": 0, "block_states": {"palette": [{"Name": block}]},
+                          "biomes": {"palette": ["minecraft:plains"]}}],
         })
 
     def generate(self, tile: Tile, dim_path: str, abort: threading.Event, progress) -> None:

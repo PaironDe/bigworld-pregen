@@ -186,6 +186,10 @@ class IntArray(list):
     pass
 
 
+class LongArray(list):
+    pass
+
+
 def _tag_of(v) -> int:
     if isinstance(v, bool):
         return TAG_BYTE
@@ -199,6 +203,8 @@ def _tag_of(v) -> int:
         return TAG_STRING
     if isinstance(v, IntArray):
         return TAG_INT_ARRAY
+    if isinstance(v, LongArray):
+        return TAG_LONG_ARRAY
     if isinstance(v, (bytes, bytearray)):
         return TAG_BYTE_ARRAY
     if isinstance(v, dict):
@@ -232,6 +238,10 @@ def _write_payload(out: bytearray, v, tag: int) -> None:
         out += struct.pack(">i", len(v))
         for x in v:
             out += struct.pack(">i", x)
+    elif tag == TAG_LONG_ARRAY:
+        out += struct.pack(">i", len(v))
+        for x in v:
+            out += struct.pack(">q", x if x < 2**63 else x - 2**64)
     elif tag == TAG_COMPOUND:
         for k, x in v.items():
             t = _tag_of(x)

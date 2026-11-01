@@ -120,8 +120,12 @@ def cmd_status(args) -> int:
         tile = f"{w['kind']} {w['tile']} {100 * (w['progress'] or 0):.0f}%" if w["tile"] else "-"
         print(f"  {w['name']:20s} {state} {w['gpu'] or '':28s} {tile:40s} {w['cps'] or 0:6.1f} cps  fertig: {w['tiles_done']}")
     for v in st["verify"]:
-        print(f"Vergleich {v['tile']}: {'IDENTISCH' if v.get('deterministic') else 'UNTERSCHIEDE'} "
+        print(f"Vergleich {v['tile']}: {'WELT IDENTISCH' if v.get('deterministic') else 'WELT VERSCHIEDEN'} "
               f"({v.get('worker_a')} vs {v.get('worker_b')})")
+        if v.get("critical"):
+            print(f"  kritisch:   {v['critical']}")
+        if v.get("minor"):
+            print(f"  unkritisch: {v['minor']}")
     for w in st["warnings"]:
         print(f"WARNUNG: {w}")
     return 0

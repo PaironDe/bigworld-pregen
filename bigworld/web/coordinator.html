@@ -220,12 +220,20 @@ function render() {
       <td class="row">${isAdmin ? `<button onclick="movePrio(${p.id},-1)">↑</button><button onclick="movePrio(${p.id},1)">↓</button><button class="danger" onclick="delPrio(${p.id})">✕</button>` : ""}</td></tr>`).join("")}</tbody></table>`
     : `<div class="muted">Keine Prioritätsbereiche. Ohne Priorität wird von 0,0 aus nach außen generiert.</div>`;
 
+  const cat = { blocks: "Blöcke", biomes: "Biome", structures: "Strukturen", block_entities: "Block-Entities",
+    missing_region: "fehlende Chunks", light: "Licht", heightmaps: "Heightmaps", ticks: "geplante Ticks",
+    entities_random: "Tierwerte (zufällig)", entities_spawn: "Tiere (Art/Position)", poi: "POI", other: "Sonstiges" };
+  const fmtCats = (o) => Object.entries(o || {}).map(([k, n]) => `${cat[k] || k}: ${n.toLocaleString("de")}`).join(" · ");
   const vr = status.verify.map((v) => v.error
       ? `<div class="err">${esc(v.tile)}: Fehler beim Vergleich: ${esc(v.error)}</div>`
-      : `<div><b class="${v.deterministic ? "okc" : "err"}">${v.deterministic ? "Identisch" : "Unterschiede"}</b>
+      : `<div><b class="${v.deterministic ? "okc" : "err"}">${v.deterministic ? "Welt identisch" : "Welt verschieden"}</b>
          ${esc(v.tile)}: ${esc(v.worker_a)} gegen ${esc(v.worker_b)}<br>
-         <span class="muted">${v.chunks_identical + v.chunks_equal_after_ignore} gleich, ${v.chunks_different} verschieden, ${v.chunks_missing} fehlend</span>
-         ${(v.examples || []).slice(0, 5).map((e) => `<div class="muted" style="font-size:12px">${esc(e)}</div>`).join("")}</div>`).join("");
+         <span class="muted">${(v.chunks_identical + v.chunks_equal_after_ignore).toLocaleString("de")} Chunks gleich,
+           ${v.chunks_different.toLocaleString("de")} mit Abweichungen${v.blocks_different !== undefined ? `, ${v.blocks_different.toLocaleString("de")} Blöcke verschieden` : ""}</span>
+         ${v.critical && Object.keys(v.critical).length ? `<div class="err" style="font-size:12px">Kritisch: ${esc(fmtCats(v.critical))}</div>` : ""}
+         ${v.minor && Object.keys(v.minor).length ? `<div class="muted" style="font-size:12px">Unkritisch: ${esc(fmtCats(v.minor))}</div>` : ""}
+         ${(v.block_examples || []).slice(0, 5).map((e) => `<div class="muted" style="font-size:12px; font-family:ui-monospace,monospace">${esc(e)}</div>`).join("")}
+         ${(v.examples || []).slice(0, 6).map((e) => `<div class="muted" style="font-size:12px">${esc(e)}</div>`).join("")}</div>`).join("");
   const copies = status.verify_copies.map((c) => `${esc(c.tile)}: Kopie von ${esc(c.worker)}`).join("<br>");
   $("verify").innerHTML = vr || (copies ? `<span class="muted">${copies}<br>Warte auf zweite Generierung.</span>` : "Noch kein Vergleich.");
 
