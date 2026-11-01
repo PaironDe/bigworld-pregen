@@ -83,7 +83,10 @@
 <script src="/static/areas.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
-let key = new URLSearchParams(location.search).get("k") || "";
+// Der Worker setzt den Sitzungsschlüssel beim Ausliefern der Seite ein (fremde Seiten können
+// die Antwort wegen der Same-Origin-Regel nicht lesen); ?k= in der Adresse geht weiterhin.
+const EMBEDDED_KEY = "__BW_SESSION_KEY__";
+let key = new URLSearchParams(location.search).get("k") || (EMBEDDED_KEY.startsWith("__") ? "" : EMBEDDED_KEY);
 try { if (key) sessionStorage.setItem("bw-key", key); else key = sessionStorage.getItem("bw-key") || ""; } catch (e) {}
 let state = null, settingsFilled = false;
 

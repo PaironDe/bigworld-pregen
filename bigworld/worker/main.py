@@ -32,6 +32,16 @@ def main(argv: list[str] | None = None) -> int:
 
     base = Path(args.data_dir) if args.data_dir else default_data_dir()
     simulate = {"delay": args.simulate_delay, "diff": args.simulate_diff} if args.simulate else None
+    other = _running_instance(base)
+    if other:
+        print(f"Der Big-World-Worker läuft auf diesem PC bereits (Prozess {other}).")
+        print("Bitte das andere schwarze Fenster benutzen oder dort 'Beenden' klicken und neu starten.")
+        if not args.headless:
+            try:
+                input("Enter drücken zum Schließen ...")
+            except EOFError:
+                pass
+        return 3
     engine = Engine(base, simulate=simulate)
     changes = {k: v for k, v in {"coordinator_url": args.url, "token": args.token, "name": args.name,
                                  "ram_gb": args.ram}.items() if v}
@@ -68,6 +78,45 @@ def main(argv: list[str] | None = None) -> int:
     engine.stop()
     _wait_for_engine(engine)
     return 0
+
+
+def _running_instance(base: Path) -> int | None:
+    """Läuft schon ein Worker mit diesem Arbeitsordner? Dann dessen PID, sonst Sperre setzen."""
+    import atexit
+    import os
+
+    base.mkdir(parents=True, exist_ok=True)
+    lock = base / "worker.pid"
+    try:
+        pid = int(lock.read_text().strip())
+    except (OSError, ValueError):
+        pid = 0
+    if pid and pid != os.getpid() and _pid_alive(pid):
+        return pid
+    lock.write_text(str(os.getpid()))
+    atexit.register(lambda: lock.unlink(missing_ok=True) if lock.exists() and lock.read_text().strip() == str(os.getpid()) else None)
+    return None
+
+
+def _pid_alive(pid: int) -> bool:
+    import os
+
+    if sys.platform == "win32":
+        import ctypes
+
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ok = k32.GetExitCodeProcess(h, ctypes.byref(code))
+        k32.CloseHandle(h)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 def _wait_for_engine(engine: Engine, timeout: float = 200) -> None:

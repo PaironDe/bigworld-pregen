@@ -88,7 +88,10 @@ class UI:
                 path = urlparse(self.path).path
                 if path in files:
                     name, ctype = files[path]
-                    return self._send(200, (web_dir() / name).read_bytes(), ctype)
+                    body = (web_dir() / name).read_bytes()
+                    if path == "/":
+                        body = body.replace(b"__BW_SESSION_KEY__", ui.key.encode())
+                    return self._send(200, body, ctype)
                 if not self._auth():
                     return self._json(403, {"detail": "Sitzungsschlüssel fehlt"})
                 if path == "/api/state":
