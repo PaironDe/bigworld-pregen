@@ -141,6 +141,28 @@ def cmd_compare(args) -> int:
     return 0 if rep.get("deterministic") else 1
 
 
+def cmd_seams(args) -> int:
+    from ..common.tiles import Tile
+    from . import seams
+    from .state import State
+
+    cfg = _cfg(args)
+    state = State(cfg)
+    names = {r["id"]: r["name"] for r in state.q("SELECT id, name FROM workers")}
+    dims = [d for d in cfg.dimensions if not args.dim or d.name.endswith(args.dim)]
+    for d in dims:
+        rows = state.q("SELECT * FROM tiles WHERE dim=? AND status='done' AND in_world=1", d.name)
+        tiles = [(Tile(r["dim"], r["tx"], r["tz"], r["rx0"], r["rx1"], r["rz0"], r["rz1"]),
+                  names.get(r["done_by"], r["done_by"] or "?")) for r in rows]
+        print(f"\n##### {d.name}: {len(tiles)} fertige Kacheln")
+        for t, w in sorted(tiles, key=lambda x: (x[0].tz, x[0].tx)):
+            print(f"  Kachel {t.tx:3d},{t.tz:3d}  x {t.x0}..{t.x1 - 1}  z {t.z0}..{t.z1 - 1}  von {w}")
+        if len(tiles) < 2:
+            continue
+        print(seams.summarize(seams.analyze(cfg.staging_world, d.path, tiles), args.top))
+    return 0
+
+
 def cmd_reset(args) -> int:
     import shutil
 
@@ -227,6 +249,10 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("compare", help="Determinismus-Vergleich einer Kachel neu ausführen")
     c.add_argument("tile", help='z. B. "minecraft:overworld|0|0"')
     c.set_defaults(fn=cmd_compare)
+    sm = sub.add_parser("seams", help="Nähte zwischen Kacheln in der Staging-Welt vermessen")
+    sm.add_argument("--dim", help="nur diese Dimension, z. B. overworld")
+    sm.add_argument("--top", type=int, default=15)
+    sm.set_defaults(fn=cmd_seams)
     r = sub.add_parser("reset", help="Kacheln zurücksetzen")
     r.add_argument("--all", action="store_true")
     r.add_argument("tiles", nargs="*")
