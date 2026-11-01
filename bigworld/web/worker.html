@@ -43,22 +43,13 @@
           <span style="--c:var(--st-pending)">offen</span>
           <span style="--c:var(--st-leased)">in Arbeit</span>
           <span style="--c:var(--st-done)">fertig</span>
-          <span style="--c:var(--st-priority)">Priorität</span>
+          <span style="--c:var(--st-priority)">Bereich</span>
         </div>
         <div class="muted" id="mapInfo" style="margin-top:6px"></div>
-        <div id="prioBox" class="form hidden" style="margin-top:12px">
-          <div class="coords">
-            <label>x von<input id="px0" type="number"></label>
-            <label>z von<input id="pz0" type="number"></label>
-            <label>x bis<input id="px1" type="number"></label>
-            <label>z bis<input id="pz1" type="number"></label>
-          </div>
-          <div class="row">
-            <button id="selectBtn">Auf Karte aufziehen</button>
-            <button class="primary" id="addPrio">Als Nächstes generieren</button>
-            <span class="muted" id="prioMsg"></span>
-          </div>
-        </div>
+      </div>
+      <div class="card form">
+        <h2>Bereiche (was als Nächstes generiert wird)</h2>
+        <div id="areas"></div>
       </div>
     </div>
 
@@ -72,7 +63,6 @@
         <details>
           <summary class="muted">Erweitert</summary>
           <div class="form" style="margin-top:8px">
-            <label>Admin-Token (nur für Prioritäten)<input id="s_admin" type="password" placeholder="unverändert lassen"></label>
             <label>Eigenes Java 25 (leer = automatisch)<input id="s_java"></label>
             <label>Zusätzliche JVM-Argumente<input id="s_jvm"></label>
           </div>
@@ -90,6 +80,7 @@
   </div>
 </main>
 <script src="/static/map.js"></script>
+<script src="/static/areas.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let key = new URLSearchParams(location.search).get("k") || "";
@@ -121,10 +112,10 @@ $("saveBtn").onclick = async () => {
   try {
     await api("/api/settings", {
       coordinator_url: $("s_url").value.trim(), token: $("s_token").value.trim(), name: $("s_name").value.trim(),
-      ram_gb: parseInt($("s_ram").value, 10), admin_token: $("s_admin").value.trim(),
+      ram_gb: parseInt($("s_ram").value, 10),
       java_path: $("s_java").value.trim(), extra_jvm_args: $("s_jvm").value.trim(),
     });
-    $("s_token").value = ""; $("s_admin").value = "";
+    $("s_token").value = "";
     $("saveMsg").textContent = "gespeichert";
     setTimeout(() => ($("saveMsg").textContent = ""), 2000);
     settingsFilled = false;
@@ -132,20 +123,9 @@ $("saveBtn").onclick = async () => {
   } catch (e) { $("saveMsg").textContent = e.message; }
 };
 
-const map = new BigWorldMap($("map"), {
-  onSelect: (s) => {
-    $("px0").value = s.x0; $("pz0").value = s.z0; $("px1").value = s.x1; $("pz1").value = s.z1;
-    map.setSelectMode(false); $("selectBtn").classList.remove("active");
-  },
-});
-$("selectBtn").onclick = () => { map.setSelectMode(!map.selectMode); $("selectBtn").classList.toggle("active", map.selectMode); };
-$("addPrio").onclick = async () => {
-  const v = (id) => parseInt($(id).value, 10);
-  const b = { dim: map.dim, x0: v("px0"), z0: v("pz0"), x1: v("px1"), z1: v("pz1"), label: "vom Worker" };
-  if ([b.x0, b.z0, b.x1, b.z1].some(Number.isNaN)) { $("prioMsg").textContent = "Alle vier Werte angeben"; return; }
-  try { await api("/api/priority", b); $("prioMsg").textContent = "priorisiert"; map.setSelection(null); pollMap(); }
-  catch (e) { $("prioMsg").textContent = e.message; }
-};
+const map = new BigWorldMap($("map"), { onSelect: (sel) => areas.fromMap(sel) });
+const areas = new AreaPanel($("areas"), map, (method, path, body) => api("/api/coord", { method, path, body }));
+areas.onChange = () => pollMap();
 
 function render() {
   const s = state;
@@ -168,8 +148,6 @@ function render() {
     $("s_url").value = st.coordinator_url; $("s_name").value = st.name; $("s_ram").value = st.ram_gb;
     $("s_java").value = st.java_path; $("s_jvm").value = st.extra_jvm_args;
     $("s_token").placeholder = st.token ? "gesetzt (leer lassen = unverändert)" : "fehlt";
-    $("s_admin").placeholder = st.admin_token ? "gesetzt (leer lassen = unverändert)" : "optional";
-    $("prioBox").classList.toggle("hidden", !st.admin_token);
     settingsFilled = true;
   }
   const logEl = $("log");
@@ -193,12 +171,13 @@ async function pollMap() {
         const b = document.createElement("button");
         b.textContent = d.name.replace("minecraft:", "").replace("the_", "");
         b.dataset.dim = d.name;
-        b.onclick = () => { map.setDim(d.name); [...tabs.children].forEach((x) => x.classList.toggle("active", x === b)); };
+        b.onclick = () => { map.setDim(d.name); [...tabs.children].forEach((x) => x.classList.toggle("active", x === b)); areas.preview(); };
         tabs.appendChild(b);
       });
       tabs.children[0].classList.add("active");
     }
     map.setStatus(st);
+    areas.render(st);
     const t = st.totals;
     $("mapInfo").textContent = `${(100 * t.chunks_done / Math.max(1, t.chunks_total)).toFixed(1)} % der Welt fertig · ` +
       `${st.workers.filter((w) => w.online).length} Worker online · ${t.cps.toFixed(1)} Chunks/s gesamt · Restzeit ${bwDuration(t.eta_seconds)}`;

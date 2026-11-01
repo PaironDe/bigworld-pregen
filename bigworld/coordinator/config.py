@@ -43,6 +43,8 @@ class Config:
     tile_regions: int
     lease_timeout_minutes: int
     max_upload_gb: float
+    max_area_side: int
+    mixed_gpus_ok: bool
     dimensions: list[Dimension]
     verify_tiles: list[str]
     deploy: DeployConfig
@@ -87,7 +89,7 @@ def load(path: str | os.PathLike | None = None) -> Config:
     srv = raw.get("server", {})
     world = raw.get("world", {})
     dims = [
-        Dimension(d["name"], int(d["radius"]), d.get("path", default_dim_path(d["name"])))
+        Dimension(d["name"], int(d.get("radius", 0)), d.get("path", default_dim_path(d["name"])))
         for d in world.get("dimensions", [])
     ]
     if not dims:
@@ -115,6 +117,8 @@ def load(path: str | os.PathLike | None = None) -> Config:
         tile_regions=int(world.get("tile_regions", 4)),
         lease_timeout_minutes=int(world.get("lease_timeout_minutes", 15)),
         max_upload_gb=float(world.get("max_upload_gb", 20)),
+        max_area_side=int(world.get("max_area_side", 65536)),
+        mixed_gpus_ok=bool(world.get("mixed_gpus_ok", False)),
         dimensions=dims,
         verify_tiles=list(raw.get("verify", {}).get("tiles", [])),
         deploy=deploy,
@@ -138,7 +142,7 @@ port = 8770
 data_dir = "/srv/bigworld"
 # Token für die Worker-Programme (an Mitspieler weitergeben)
 worker_token = "{worker_token}"
-# Token für Prioritäten, Pause usw. in der Weboberfläche (nur für dich)
+# Token für Pause usw. in der Weboberfläche (nur für dich). Bereiche darf jeder mit Worker-Token anlegen.
 admin_token = "{admin_token}"
 
 [world]
@@ -149,22 +153,28 @@ lease_timeout_minutes = 15
 # Obergrenze für ein einzelnes Kachelpaket
 max_upload_gb = 20
 
-# Radius in Blöcken um 0,0 (die Welt wird auf ganze Regionen aufgerundet).
-# Testlauf: 2000. Echte Generierung Overworld: 15360.
+# Was generiert wird, legt ihr in der Weboberfläche als "Bereiche" fest (Koordinator
+# oder Worker-Programm). Hier stehen nur die Dimensionen und ihre Ordner in der Welt.
+# radius (optional): Startbereich um 0,0, wird nur beim allerersten Start angelegt.
+# Größter erlaubter Bereich (Kantenlänge in Blöcken) pro Eintrag in der Oberfläche
+max_area_side = 65536
+# true = keine Warnung, wenn Worker mit verschiedenen GPUs gleichzeitig laufen
+mixed_gpus_ok = false
+
 [[world.dimensions]]
 name = "minecraft:overworld"
-radius = 2000
 path = "dimensions/minecraft/overworld"
+radius = 2000
 
 [[world.dimensions]]
 name = "minecraft:the_nether"
-radius = 2000
 path = "dimensions/minecraft/the_nether"
+radius = 2000
 
 [[world.dimensions]]
 name = "minecraft:the_end"
-radius = 2000
 path = "dimensions/minecraft/the_end"
+radius = 2000
 
 [verify]
 # Diese Kacheln werden von zwei verschiedenen Workern generiert und chunkweise

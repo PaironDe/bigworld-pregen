@@ -29,6 +29,8 @@
     }
 
     setStatus(status) {
+      const sig = JSON.stringify((status.areas || []).map((a) => [a.id, a.dim, a.x0, a.z0, a.x1, a.z1]));
+      if (sig !== this.areaSig) { this.fitted = {}; this.areaSig = sig; }  // neue Bereiche: Ansicht neu einpassen
       this.status = status;
       if (!this.dim && status.dimensions.length) this.dim = status.dimensions[0].name;
       if (!this.fitted[this.dim]) this.fit();
@@ -52,19 +54,32 @@
       this.draw();
     }
 
-    dimInfo() {
-      return this.status && this.status.dimensions.find((d) => d.name === this.dim);
+    bounds() {
+      const b = { x0: Infinity, z0: Infinity, x1: -Infinity, z1: -Infinity };
+      for (const t of this.tilesOfDim()) {
+        b.x0 = Math.min(b.x0, t.rx0 * REGION); b.z0 = Math.min(b.z0, t.rz0 * REGION);
+        b.x1 = Math.max(b.x1, (t.rx1 + 1) * REGION); b.z1 = Math.max(b.z1, (t.rz1 + 1) * REGION);
+      }
+      for (const a of this.areasOfDim()) {
+        b.x0 = Math.min(b.x0, a.x0); b.z0 = Math.min(b.z0, a.z0);
+        b.x1 = Math.max(b.x1, a.x1 + 1); b.z1 = Math.max(b.z1, a.z1 + 1);
+      }
+      if (!Number.isFinite(b.x0)) return { x0: -4096, z0: -4096, x1: 4096, z1: 4096 };
+      return b;
+    }
+
+    areasOfDim() {
+      return this.status ? (this.status.areas || []).filter((a) => a.dim === this.dim) : [];
     }
 
     fit() {
-      const d = this.dimInfo();
-      if (!d) return;
-      const n = Math.ceil(d.radius / REGION) * REGION;
+      if (!this.status) return;
+      const b = this.bounds();
       const r = this.canvas.getBoundingClientRect();
-      const size = Math.max(64, Math.min(r.width, r.height) - 40);
-      this.scale = size / (2 * n);
-      this.cx = 0;
-      this.cz = 0;
+      const w = Math.max(64, r.width - 40), h = Math.max(64, r.height - 40);
+      this.scale = Math.min(w / (b.x1 - b.x0), h / (b.z1 - b.z0));
+      this.cx = (b.x0 + b.x1) / 2;
+      this.cz = (b.z0 + b.z1) / 2;
       this.fitted[this.dim] = true;
     }
 
@@ -129,6 +144,7 @@
         this.draw();
         if (this.opts.onHover) this.opts.onHover(this.hover);
       });
+      c.addEventListener("dblclick", () => { this.fit(); this.draw(); });
       c.addEventListener("pointerleave", () => {
         this.hover = null;
         this.draw();
@@ -195,25 +211,23 @@
 
       // Regionsraster (nur wenn groß genug)
       const regionPx = REGION * this.scale;
-      const d = this.dimInfo();
-      if (d) {
-        const n = Math.ceil(d.radius / REGION);
-        if (regionPx >= 6) {
-          ctx.strokeStyle = grid;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          for (let i = -n; i <= n; i++) {
-            const [ax, ay] = this.toScreen(i * REGION, -n * REGION);
-            const [bx, by] = this.toScreen(i * REGION, n * REGION);
-            ctx.moveTo(Math.round(ax) + 0.5, ay);
-            ctx.lineTo(Math.round(bx) + 0.5, by);
-            const [cx0, cy0] = this.toScreen(-n * REGION, i * REGION);
-            const [cx1, cy1] = this.toScreen(n * REGION, i * REGION);
-            ctx.moveTo(cx0, Math.round(cy0) + 0.5);
-            ctx.lineTo(cx1, Math.round(cy1) + 0.5);
-          }
-          ctx.stroke();
+      if (regionPx >= 6) {
+        const [wx0, wz0] = this.toWorld(0, 0);
+        const [wx1, wz1] = this.toWorld(r.width, r.height);
+        ctx.strokeStyle = grid;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let i = Math.floor(wx0 / REGION); i <= Math.ceil(wx1 / REGION); i++) {
+          const [ax] = this.toScreen(i * REGION, 0);
+          ctx.moveTo(Math.round(ax) + 0.5, 0);
+          ctx.lineTo(Math.round(ax) + 0.5, r.height);
         }
+        for (let i = Math.floor(wz0 / REGION); i <= Math.ceil(wz1 / REGION); i++) {
+          const [, ay] = this.toScreen(0, i * REGION);
+          ctx.moveTo(0, Math.round(ay) + 0.5);
+          ctx.lineTo(r.width, Math.round(ay) + 0.5);
+        }
+        ctx.stroke();
       }
 
       // Kachelränder, Prioritäten, Vergleichskacheln
@@ -223,11 +237,6 @@
         ctx.lineWidth = 1;
         ctx.strokeStyle = tileLine;
         ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1);
-        if (t.priority !== null && t.priority !== undefined && t.status !== "done") {
-          ctx.lineWidth = 2;
-          ctx.strokeStyle = prioColor;
-          ctx.strokeRect(x0 + 2, y0 + 2, x1 - x0 - 4, y1 - y0 - 4);
-        }
         if (t.verify) {
           ctx.setLineDash([4, 3]);
           ctx.lineWidth = 2;
@@ -242,18 +251,19 @@
         }
       }
 
-      // Prioritätsbereiche
-      for (const p of (this.status.priorities || []).filter((p) => p.dim === this.dim)) {
-        const [x0, y0] = this.toScreen(p.x0, p.z0);
-        const [x1, y1] = this.toScreen(p.x1 + 1, p.z1 + 1);
-        ctx.fillStyle = prioColor;
-        ctx.globalAlpha = 0.15;
-        ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
-        ctx.globalAlpha = 1;
+      // Bereiche (Umriss + Nummer in Abarbeitungsreihenfolge)
+      const all = this.status.areas || [];
+      all.forEach((a, i) => {
+        if (a.dim !== this.dim) return;
+        const [x0, y0] = this.toScreen(a.x0, a.z0);
+        const [x1, y1] = this.toScreen(a.x1 + 1, a.z1 + 1);
         ctx.strokeStyle = prioColor;
         ctx.lineWidth = 1.5;
         ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
-      }
+        ctx.fillStyle = prioColor;
+        ctx.font = "600 12px system-ui, sans-serif";
+        ctx.fillText(`#${i + 1}${a.label ? " " + a.label : ""}`, x0 + 4, y0 - 4);
+      });
 
       // Auswahl
       if (this.selection) {
@@ -288,7 +298,7 @@
           lines.push(`Kachel ${t.tx}, ${t.tz}: ${statusLabel(t.status)}`);
           if (t.worker) lines.push(`auf ${t.worker} (${Math.round(100 * (t.progress || 0))} %)`);
           if (t.done_by) lines.push(`fertig von ${t.done_by}`);
-          if (t.priority !== null && t.priority !== undefined) lines.push(`Priorität ${t.priority + 1}`);
+          if (t.priority !== null && t.priority !== undefined) lines.push(`Bereich #${t.priority + 1}`);
           if (t.error) lines.push(`Fehler: ${t.error.slice(0, 60)}`);
         }
         ctx.font = "12px system-ui, sans-serif";

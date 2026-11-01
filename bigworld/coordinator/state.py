@@ -1,4 +1,4 @@
-"""Zustand des Koordinators in SQLite: Kacheln, Leases, Worker, Prioritäten."""
+"""Zustand des Koordinators in SQLite: Bereiche, Kacheln, Leases, Worker."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import time
 import uuid
 from pathlib import Path
 
-from ..common.tiles import Tile, tiles_for_dimension, tiles_touching_area
+from ..common.tiles import REGION_BLOCKS, Tile
 from .config import Config
 
 SCHEMA = """
@@ -20,11 +20,12 @@ CREATE TABLE IF NOT EXISTS tiles (
     rx0 INTEGER NOT NULL, rx1 INTEGER NOT NULL,
     rz0 INTEGER NOT NULL, rz1 INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',   -- pending | leased | merging | done | failed
-    priority INTEGER,                         -- Rang des ersten Prioritätsbereichs, NULL = keiner
+    priority INTEGER,                         -- Rang des ersten Bereichs, der die Kachel berührt
+    order_key REAL,                           -- Abstand zur Mitte dieses Bereichs
     attempts INTEGER NOT NULL DEFAULT 0,
     done_at REAL, done_by TEXT, bundle_hash TEXT, size INTEGER,
     last_error TEXT,
-    in_world INTEGER NOT NULL DEFAULT 1       -- 0 = außerhalb des aktuellen Radius
+    in_world INTEGER NOT NULL DEFAULT 1       -- 0 = von keinem Bereich mehr berührt und nicht fertig
 );
 CREATE TABLE IF NOT EXISTS leases (
     id TEXT PRIMARY KEY,
@@ -46,6 +47,12 @@ CREATE TABLE IF NOT EXISTS workers (
     first_seen REAL, last_seen REAL,
     tiles_done INTEGER NOT NULL DEFAULT 0,
     chunks_done INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS areas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dim TEXT NOT NULL,
+    x0 INTEGER NOT NULL, z0 INTEGER NOT NULL, x1 INTEGER NOT NULL, z1 INTEGER NOT NULL,
+    label TEXT, position INTEGER NOT NULL, created REAL NOT NULL, created_by TEXT
 );
 CREATE TABLE IF NOT EXISTS priorities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,6 +92,9 @@ class State:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(tiles)")}
+        if "order_key" not in cols:
+            self.db.execute("ALTER TABLE tiles ADD COLUMN order_key REAL")
         self.sync_tiles()
 
     # Hilfen -----------------------------------------------------------------
@@ -107,15 +117,65 @@ class State:
     def paused(self) -> bool:
         return self.setting("paused", "0") == "1"
 
-    # Kacheln ----------------------------------------------------------------
-    def all_tiles(self) -> list[Tile]:
-        out = []
-        for d in self.cfg.dimensions:
-            out += tiles_for_dimension(d.name, d.radius, self.cfg.tile_regions)
-        return out
+    # Bereiche und Kacheln ---------------------------------------------------
+    #
+    # Was generiert wird, bestimmen Bereiche (Rechtecke in Blockkoordinaten), die jeder
+    # mit Worker-Token in der Oberfläche anlegen kann. Bereiche werden der Reihe nach
+    # abgearbeitet, innerhalb eines Bereichs von der Mitte nach außen. Eine Kachel umfasst
+    # nur die Regionen, die ein Bereich berührt; fertige Kacheln bleiben immer in der Welt.
+
+    def areas(self) -> list[sqlite3.Row]:
+        return self.q("SELECT * FROM areas ORDER BY position, id")
+
+    def _seed_areas_from_config(self) -> None:
+        if self.setting("areas_seeded") == "1":
+            return
+        if not self.q("SELECT 1 FROM areas LIMIT 1"):
+            for d in self.cfg.dimensions:
+                if d.radius > 0:
+                    self._insert_area(d.name, -d.radius, -d.radius, d.radius - 1, d.radius - 1,
+                                      "Startbereich (Konfiguration)", front=False)
+        self.set_setting("areas_seeded", "1")
+
+    def _insert_area(self, dim: str, x0: int, z0: int, x1: int, z1: int, label: str, front: bool,
+                     created_by: str = "") -> int:
+        if front:
+            self.db.execute("UPDATE areas SET position=position+1")
+            pos = 0
+        else:
+            pos = self.db.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM areas").fetchone()[0]
+        cur = self.db.execute(
+            "INSERT INTO areas(dim, x0, z0, x1, z1, label, position, created, created_by) VALUES(?,?,?,?,?,?,?,?,?)",
+            (dim, min(x0, x1), min(z0, z1), max(x0, x1), max(z0, z1), label[:80], pos, now(), created_by[:64]),
+        )
+        return cur.lastrowid
+
+    def _wanted_tiles(self) -> dict[str, tuple[Tile, int, float]]:
+        """key -> (Kachel auf die berührten Regionen zugeschnitten, Rang, Abstand zur Bereichsmitte)."""
+        T = self.cfg.tile_regions
+        out: dict[str, list] = {}
+        for rank, a in enumerate(self.areas()):
+            rx0, rx1 = a["x0"] // REGION_BLOCKS, a["x1"] // REGION_BLOCKS
+            rz0, rz1 = a["z0"] // REGION_BLOCKS, a["z1"] // REGION_BLOCKS
+            mx, mz = (a["x0"] + a["x1"]) / 2, (a["z0"] + a["z1"]) / 2
+            for tz in range(rz0 // T, rz1 // T + 1):
+                for tx in range(rx0 // T, rx1 // T + 1):
+                    hx0, hx1 = max(rx0, tx * T), min(rx1, tx * T + T - 1)
+                    hz0, hz1 = max(rz0, tz * T), min(rz1, tz * T + T - 1)
+                    key = f"{a['dim']}|{tx}|{tz}"
+                    if key in out:
+                        e = out[key]
+                        e[0], e[1] = min(e[0], hx0), max(e[1], hx1)
+                        e[2], e[3] = min(e[2], hz0), max(e[3], hz1)
+                    else:
+                        cx = (tx * T + T / 2) * REGION_BLOCKS
+                        cz = (tz * T + T / 2) * REGION_BLOCKS
+                        out[key] = [hx0, hx1, hz0, hz1, rank, ((cx - mx) ** 2 + (cz - mz) ** 2) ** 0.5,
+                                    a["dim"], tx, tz]
+        return {k: (Tile(e[6], e[7], e[8], e[0], e[1], e[2], e[3]), e[4], e[5]) for k, e in out.items()}
 
     def sync_tiles(self) -> None:
-        """Kacheltabelle an die Konfiguration anpassen (neue anlegen, nichts Fertiges löschen)."""
+        """Kacheltabelle an die Bereiche anpassen (neue anlegen, nichts Fertiges löschen)."""
         with self.lock:
             stored = self.setting("tile_regions")
             if stored and int(stored) != self.cfg.tile_regions:
@@ -128,30 +188,50 @@ class State:
                     )
                 self.db.execute("DELETE FROM tiles")
             self.set_setting("tile_regions", str(self.cfg.tile_regions))
-            wanted = {t.key: t for t in self.all_tiles()}
+            self._seed_areas_from_config()
+            wanted = self._wanted_tiles()
             existing = {r["key"]: r for r in self.db.execute("SELECT * FROM tiles")}
             self.db.execute("BEGIN")
-            for key, t in wanted.items():
-                if key in existing:
-                    r = existing[key]
-                    if (r["rx0"], r["rx1"], r["rz0"], r["rz1"]) != (t.rx0, t.rx1, t.rz0, t.rz1):
-                        # Randkachel wurde durch größeren Radius größer: neu generieren
+            try:
+                for key, (t, rank, dist) in wanted.items():
+                    if key in existing:
+                        r = existing[key]
+                        old = (r["rx0"], r["rx1"], r["rz0"], r["rz1"])
+                        new = (t.rx0, t.rx1, t.rz0, t.rz1)
+                        if old != new:
+                            covers = t.rx0 <= old[0] and old[1] <= t.rx1 and t.rz0 <= old[2] and old[3] <= t.rz1
+                            if r["status"] == "done" and not covers:
+                                new = (min(old[0], new[0]), max(old[1], new[1]), min(old[2], new[2]), max(old[3], new[3]))
+                            if new != old:
+                                # Kachel wird größer: komplett neu generieren, laufende Arbeit abbrechen
+                                self.db.execute(
+                                    "UPDATE leases SET status='superseded', updated=? WHERE tile_key=? AND status='active' AND kind='gen'",
+                                    (now(), key))
+                                self.db.execute(
+                                    "UPDATE tiles SET rx0=?, rx1=?, rz0=?, rz1=?, status=CASE WHEN status IN "
+                                    "('done','leased','failed') THEN 'pending' ELSE status END WHERE key=?",
+                                    (*new, key))
+                        self.db.execute("UPDATE tiles SET in_world=1, priority=?, order_key=? WHERE key=?",
+                                        (rank, dist, key))
+                    else:
                         self.db.execute(
-                            "UPDATE tiles SET rx0=?, rx1=?, rz0=?, rz1=?, in_world=1, "
-                            "status=CASE WHEN status='done' THEN 'pending' ELSE status END WHERE key=?",
-                            (t.rx0, t.rx1, t.rz0, t.rz1, key),
+                            "INSERT INTO tiles(key, dim, tx, tz, rx0, rx1, rz0, rz1, priority, order_key) "
+                            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                            (key, t.dim, t.tx, t.tz, t.rx0, t.rx1, t.rz0, t.rz1, rank, dist),
                         )
-                    elif not r["in_world"]:
-                        self.db.execute("UPDATE tiles SET in_world=1 WHERE key=?", (key,))
-                else:
-                    self.db.execute(
-                        "INSERT INTO tiles(key, dim, tx, tz, rx0, rx1, rz0, rz1) VALUES(?,?,?,?,?,?,?,?)",
-                        (key, t.dim, t.tx, t.tz, t.rx0, t.rx1, t.rz0, t.rz1),
-                    )
-            for key in set(existing) - set(wanted):
-                self.db.execute("UPDATE tiles SET in_world=0 WHERE key=?", (key,))
-            self.db.execute("COMMIT")
-            self._recompute_priorities()
+                for key in set(existing) - set(wanted):
+                    r = existing[key]
+                    if r["status"] == "done":
+                        self.db.execute("UPDATE tiles SET in_world=1, priority=NULL WHERE key=?", (key,))
+                    else:
+                        self.db.execute("UPDATE leases SET status='superseded', updated=? WHERE tile_key=? AND status='active'",
+                                        (now(), key))
+                        self.db.execute("UPDATE tiles SET in_world=0, priority=NULL, "
+                                        "status=CASE WHEN status='leased' THEN 'pending' ELSE status END WHERE key=?", (key,))
+                self.db.execute("COMMIT")
+            except BaseException:
+                self.db.execute("ROLLBACK")
+                raise
 
     def tile(self, key: str) -> Tile:
         rows = self.q("SELECT * FROM tiles WHERE key=?", key)
@@ -159,47 +239,65 @@ class State:
             raise StateError(f"Unbekannte Kachel {key}", 404)
         return _tile_from_row(rows[0])
 
-    # Prioritäten ------------------------------------------------------------
-    def _recompute_priorities(self) -> None:
-        with self.lock:
-            self.db.execute("UPDATE tiles SET priority=NULL")
-            prios = self.db.execute("SELECT * FROM priorities ORDER BY position, id").fetchall()
-            tiles_by_dim: dict[str, list[Tile]] = {}
-            for r in self.db.execute("SELECT * FROM tiles WHERE in_world=1"):
-                tiles_by_dim.setdefault(r["dim"], []).append(_tile_from_row(r))
-            for rank, p in enumerate(prios):
-                for t in tiles_touching_area(tiles_by_dim.get(p["dim"], []), p["x0"], p["z0"], p["x1"], p["z1"]):
-                    self.db.execute(
-                        "UPDATE tiles SET priority=? WHERE key=? AND (priority IS NULL OR priority>?)",
-                        (rank, t.key, rank),
-                    )
+    def _check_area(self, dim: str, x0: int, z0: int, x1: int, z1: int) -> None:
+        try:
+            self.cfg.dimension(dim)
+        except KeyError:
+            raise StateError(f"Unbekannte Dimension {dim}") from None
+        side = max(abs(x1 - x0), abs(z1 - z0)) + 1
+        if side > self.cfg.max_area_side:
+            raise StateError(f"Bereich zu groß ({side:,} Blöcke Kantenlänge, erlaubt {self.cfg.max_area_side:,}). "
+                             "Bitte in mehrere Bereiche aufteilen.")
+        lim = 29_999_984
+        if any(abs(v) > lim for v in (x0, z0, x1, z1)):
+            raise StateError("Koordinaten außerhalb der Weltgrenze")
 
-    def add_priority(self, dim: str, x0: int, z0: int, x1: int, z1: int, label: str = "") -> dict:
-        self.cfg.dimension(dim)
+    def add_area(self, dim: str, x0: int, z0: int, x1: int, z1: int, label: str = "", front: bool = False,
+                 created_by: str = "") -> dict:
+        self._check_area(dim, x0, z0, x1, z1)
         with self.lock:
-            pos = self.q("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM priorities")[0]["p"]
-            self.x(
-                "INSERT INTO priorities(dim, x0, z0, x1, z1, label, position, created) VALUES(?,?,?,?,?,?,?,?)",
-                dim, min(x0, x1), min(z0, z1), max(x0, x1), max(z0, z1), label, pos, now(),
-            )
-            self._recompute_priorities()
-            pid = self.q("SELECT last_insert_rowid() AS i")[0]["i"]
-            return {"id": pid}
+            aid = self._insert_area(dim, x0, z0, x1, z1, label, front, created_by)
+            self.sync_tiles()
+            return {"id": aid}
 
-    def delete_priority(self, pid: int) -> None:
+    def delete_area(self, aid: int) -> None:
         with self.lock:
-            self.x("DELETE FROM priorities WHERE id=?", pid)
-            self._recompute_priorities()
+            self.x("DELETE FROM areas WHERE id=?", aid)
+            self._renumber()
+            self.sync_tiles()
 
-    def reorder_priorities(self, ids: list[int]) -> None:
+    def reorder_areas(self, ids: list[int]) -> None:
         with self.lock:
-            for pos, pid in enumerate(ids):
-                self.x("UPDATE priorities SET position=? WHERE id=?", pos, pid)
-            self._recompute_priorities()
+            known = [r["id"] for r in self.areas()]
+            order = [i for i in ids if i in known] + [i for i in known if i not in ids]
+            for pos, aid in enumerate(order):
+                self.x("UPDATE areas SET position=? WHERE id=?", pos, aid)
+            self.sync_tiles()
 
-    def preview_priority(self, dim: str, x0: int, z0: int, x1: int, z1: int) -> list[str]:
-        tiles = [_tile_from_row(r) for r in self.q("SELECT * FROM tiles WHERE dim=? AND in_world=1", dim)]
-        return [t.key for t in tiles_touching_area(tiles, x0, z0, x1, z1)]
+    def _renumber(self) -> None:
+        for pos, r in enumerate(self.areas()):
+            self.x("UPDATE areas SET position=? WHERE id=?", pos, r["id"])
+
+    def preview_area(self, dim: str, x0: int, z0: int, x1: int, z1: int) -> dict:
+        """Was ein neuer Bereich zusätzlich kosten würde."""
+        self._check_area(dim, x0, z0, x1, z1)
+        T = self.cfg.tile_regions
+        rx0, rx1 = min(x0, x1) // REGION_BLOCKS, max(x0, x1) // REGION_BLOCKS
+        rz0, rz1 = min(z0, z1) // REGION_BLOCKS, max(z0, z1) // REGION_BLOCKS
+        done_regions = set()
+        planned_regions = set()
+        for r in self.q("SELECT * FROM tiles WHERE dim=? AND in_world=1", dim):
+            target = done_regions if r["status"] == "done" else planned_regions
+            for rx in range(r["rx0"], r["rx1"] + 1):
+                for rz in range(r["rz0"], r["rz1"] + 1):
+                    target.add((rx, rz))
+        total = (rx1 - rx0 + 1) * (rz1 - rz0 + 1)
+        new = sum(1 for rx in range(rx0, rx1 + 1) for rz in range(rz0, rz1 + 1)
+                  if (rx, rz) not in done_regions and (rx, rz) not in planned_regions)
+        tiles = (rx1 // T - rx0 // T + 1) * (rz1 // T - rz0 // T + 1)
+        return {"regions": total, "new_regions": new, "new_chunks": new * 1024, "tiles": tiles,
+                "x0": rx0 * REGION_BLOCKS, "x1": (rx1 + 1) * REGION_BLOCKS - 1,
+                "z0": rz0 * REGION_BLOCKS, "z1": (rz1 + 1) * REGION_BLOCKS - 1}
 
     # Worker -----------------------------------------------------------------
     def register_worker(self, name: str, info: dict) -> str:
@@ -285,25 +383,17 @@ class State:
                 return self._create_lease(wid, verify, "verify", bundle_hash)
 
             rows = self.q(
-                "SELECT * FROM tiles WHERE status='pending' AND in_world=1 "
-                "ORDER BY priority IS NULL, priority"
+                "SELECT key FROM tiles WHERE status='pending' AND in_world=1 AND priority IS NOT NULL "
+                "ORDER BY priority, order_key LIMIT 1"
             )
             if rows:
-                order = {d.name: i for i, d in enumerate(self.cfg.dimensions)}
-                best = min(
-                    rows,
-                    key=lambda r: (
-                        r["priority"] is None,
-                        r["priority"] if r["priority"] is not None else 0,
-                        order.get(r["dim"], 99),
-                        _tile_from_row(r).distance_from_origin(),
-                    ),
-                )
-                return self._create_lease(wid, best["key"], "gen", bundle_hash)
+                return self._create_lease(wid, rows[0]["key"], "gen", bundle_hash)
 
             busy = self.q("SELECT COUNT(*) c FROM tiles WHERE status IN ('leased','merging') AND in_world=1")[0]["c"]
             if busy:
                 return {"wait": True, "reason": "Alle Kacheln sind vergeben, warte auf andere Worker"}
+            if not self.q("SELECT 1 FROM areas LIMIT 1"):
+                return {"wait": True, "reason": "Kein Bereich angelegt. Im Tool unter 'Bereiche' einen Bereich hinzufügen."}
             failed = self.q("SELECT COUNT(*) c FROM tiles WHERE status='failed' AND in_world=1")[0]["c"]
             if failed:
                 return {"wait": True, "reason": f"{failed} Kacheln fehlgeschlagen, bitte im Koordinator prüfen"}
@@ -492,11 +582,14 @@ class State:
     def reset_tiles(self, keys: list[str] | None) -> int:
         with self.lock:
             if keys is None:
+                # Alles neu: Kacheln und Bereiche löschen (die Konfiguration legt keine neuen an)
                 n = self.q("SELECT COUNT(*) c FROM tiles")[0]["c"]
-                self.x("UPDATE tiles SET status='pending', attempts=0, done_at=NULL, done_by=NULL, bundle_hash=NULL, size=NULL, last_error=NULL")
                 self.x("UPDATE leases SET status='superseded' WHERE status='active'")
+                self.x("DELETE FROM tiles")
+                self.x("DELETE FROM areas")
                 self.x("DELETE FROM verify_copies")
                 self.x("DELETE FROM verify_results")
+                self.set_setting("areas_seeded", "1")
                 return n
             for k in keys:
                 self.tile(k)
@@ -508,6 +601,32 @@ class State:
         return {r["bundle_hash"] for r in self.q("SELECT DISTINCT bundle_hash FROM tiles WHERE status='done'")}
 
     # Status -----------------------------------------------------------------
+    def _area_progress(self, tiles_out: list[dict]) -> list[dict]:
+        out = []
+        for a in self.areas():
+            rx0, rx1 = a["x0"] // REGION_BLOCKS, a["x1"] // REGION_BLOCKS
+            rz0, rz1 = a["z0"] // REGION_BLOCKS, a["z1"] // REGION_BLOCKS
+            total = (rx1 - rx0 + 1) * (rz1 - rz0 + 1)
+            done = running = 0.0
+            for t in tiles_out:
+                if t["dim"] != a["dim"]:
+                    continue
+                ix = min(rx1, t["rx1"]) - max(rx0, t["rx0"]) + 1
+                iz = min(rz1, t["rz1"]) - max(rz0, t["rz0"]) + 1
+                if ix <= 0 or iz <= 0:
+                    continue
+                if t["status"] == "done":
+                    done += ix * iz
+                elif t.get("progress"):
+                    running += ix * iz * t["progress"]
+            out.append({
+                "id": a["id"], "dim": a["dim"], "x0": a["x0"], "z0": a["z0"], "x1": a["x1"], "z1": a["z1"],
+                "label": a["label"], "position": a["position"], "created_by": a["created_by"],
+                "chunks_total": total * 1024, "chunks_done": int(done * 1024),
+                "progress": (done + running) / total if total else 1.0,
+            })
+        return out
+
     def status(self, bundle_hash: str | None = None) -> dict:
         with self.lock:
             template = {"sha256": self.template_sha(bundle_hash) if bundle_hash else None}
@@ -575,20 +694,19 @@ class State:
             totals["eta_seconds"] = int(remaining / total_cps) if total_cps > 0 else None
             gpus = {(w["gpu"], w["driver"]) for w in workers_out if w["online"] and w["gpu"]}
             warnings = []
-            if len(gpus) > 1:
+            if len(gpus) > 1 and not self.cfg.mixed_gpus_ok:
                 warnings.append(
                     "Online-Worker nutzen unterschiedliche GPUs oder Treiber: "
                     + ", ".join(f"{g} ({d})" for g, d in sorted(gpus, key=str))
-                    + ". Determinismus-Test beachten."
+                    + ". An Kachelgrenzen sind kleine Abweichungen möglich."
                 )
             return {
                 "tile_regions": self.cfg.tile_regions,
-                "dimensions": [
-                    {"name": d.name, "radius": d.radius, "path": d.path} for d in self.cfg.dimensions
-                ],
+                "dimensions": [{"name": d.name, "path": d.path} for d in self.cfg.dimensions],
+                "max_area_side": self.cfg.max_area_side,
                 "tiles": tiles_out,
                 "workers": sorted(workers_out, key=lambda w: (not w["online"], w["name"])),
-                "priorities": [dict(r) for r in self.q("SELECT * FROM priorities ORDER BY position, id")],
+                "areas": self._area_progress(tiles_out),
                 "verify": [
                     {"tile": r["tile_key"], **json.loads(r["result"]), "created": r["created"]}
                     for r in self.q("SELECT * FROM verify_results")

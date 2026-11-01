@@ -2,6 +2,18 @@
 
 Neueste oben. Format: Datum · Entscheidung · Begründung.
 
+## 01.11.2026
+
+- **Mischbetrieb verschiedener GPUs freigegeben.** Vergleich 2080 Super (Linux) gegen 4070
+  (Windows) mit C2ME-OpenCL: Biome identisch, aber ~0,8 % der Blöcke verschieden (Erze,
+  Deepslate-Übergänge, Dripstone) und vereinzelt andere Strukturstarts. An den Kachelgrenzen
+  im Test aber kaum sichtbar (Stufen im Mittel wie natürliches Gelände, eine Stelle bis 15
+  Blöcke). Nach Sichtprüfung im Spiel als akzeptabel bewertet.
+- **Generierungsbereiche statt fester Radius.** Jeder mit Worker-Token legt in der Oberfläche
+  Bereiche an; sie werden der Reihe nach abgearbeitet. `reset --all` löscht auch die Bereiche.
+- **Do a Barrel Roll nicht im Generier-Bundle.** Bringt eine alte fabric-permissions-api mit,
+  die auf 26.2 abstürzt, sobald Chunky einen Konsolenbefehl prüft.
+
 ## 31.10.2026
 
 - **Fabric 26.2 bleibt.** Umstellung auf NeoForge 1.21.1 verworfen.

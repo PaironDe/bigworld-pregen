@@ -112,6 +112,9 @@ def cmd_status(args) -> int:
     print(f"Vorlage:    {'vorhanden' if st['template']['sha256'] else 'fehlt'}"
           f"{' (läuft auf ' + st['template']['running_on'] + ')' if st['template']['running_on'] else ''}")
     print(f"Kacheln:    {t['tiles']}")
+    for i, a in enumerate(st["areas"], 1):
+        print(f"  Bereich #{i} {a['label'] or ''} {a['dim']} x {a['x0']}..{a['x1']} z {a['z0']}..{a['z1']}: "
+              f"{100 * a['progress']:.0f} %")
     print(f"Chunks:     {t['chunks_done']:,} / {t['chunks_total']:,} ({pct:.1f} %)   {t['cps']:.1f} Chunks/s")
     if t["eta_seconds"]:
         print(f"Restzeit:   ~{t['eta_seconds'] / 3600:.1f} h")
@@ -171,7 +174,7 @@ def cmd_reset(args) -> int:
     cfg = _cfg(args)
     state = State(cfg)
     if args.all:
-        ans = input("Alle Kacheln zurücksetzen und die Staging-Welt löschen? (ja/nein) ")
+        ans = input("Alle Kacheln und Bereiche löschen und die Staging-Welt leeren? (ja/nein) ")
         if ans.strip().lower() != "ja":
             print("Abgebrochen")
             return 1
@@ -179,7 +182,7 @@ def cmd_reset(args) -> int:
         staging = cfg.data_dir / "staging"
         if staging.exists():
             shutil.rmtree(staging)
-        print(f"{n} Kacheln zurückgesetzt, Staging gelöscht")
+        print(f"{n} Kacheln und alle Bereiche gelöscht, Staging geleert. Neue Bereiche in der Weboberfläche anlegen.")
     else:
         print(f"{state.reset_tiles(args.tiles)} Kacheln zurückgesetzt")
     return 0

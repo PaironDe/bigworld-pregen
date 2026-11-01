@@ -22,6 +22,14 @@ Alles andere passiert automatisch: Java herunterladen, Mods und Einstellungen
 abgleichen, Minecraft-Server im Hintergrund starten, generieren, prüfen, hochladen,
 nächste Kachel holen.
 
+## Bereiche festlegen
+
+Was generiert wird, legt ihr selbst fest: Auf der Worker-Seite unter **Bereiche** einen
+Bereich eintragen (Mitte + Radius oder Rechteck, oder auf der Karte aufziehen) und
+**Hinzufügen**. Bereiche werden der Reihe nach abgearbeitet, jeweils von der Mitte nach außen.
+**Hinzufügen und vorziehen** setzt einen Bereich an den Anfang der Warteschlange.
+Unter der Eingabe steht, wie viele neue Chunks das kostet und wie lange es etwa dauert.
+
 ## Gut zu wissen
 
 - **Das schwarze Fenster offen lassen**, solange generiert wird. Schließen beendet den Worker.

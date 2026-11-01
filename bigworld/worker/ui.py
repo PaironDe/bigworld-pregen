@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import re
 import secrets
 import sys
 import threading
@@ -46,6 +47,7 @@ class UI:
             "/": ("worker.html", "text/html; charset=utf-8"),
             "/static/map.js": ("map.js", "text/javascript; charset=utf-8"),
             "/static/style.css": ("style.css", "text/css; charset=utf-8"),
+            "/static/areas.js": ("areas.js", "text/javascript; charset=utf-8"),
         }
 
         class H(BaseHTTPRequestHandler):
@@ -115,15 +117,22 @@ class UI:
                     engine.update_settings(body)
                     engine.manifest = None
                     return self._json(200, engine.snapshot()["settings"])
-                if path in ("/api/priority", "/api/priority-preview"):
+                if path == "/api/coord":
+                    # Weiterleitung an den Koordinator, nur für die Bereichsverwaltung
+                    method = str(body.get("method", "GET")).upper()
+                    target = str(body.get("path", ""))
+                    if method not in ("GET", "POST", "DELETE") or not re.fullmatch(
+                            r"/api/v1/areas(/preview|/reorder|/\d+)?", target):
+                        return self._json(403, {"detail": "nicht erlaubt"})
                     s = engine.settings
-                    token = s.admin_token if path == "/api/priority" else (s.admin_token or s.token)
-                    if not token:
-                        return self._json(403, {"detail": "Für Prioritäten wird der Admin-Token gebraucht"})
-                    c = Client(s.coordinator_url, token)
-                    target = "/api/v1/priorities" if path == "/api/priority" else "/api/v1/priorities/preview"
+                    if not s.token:
+                        return self._json(403, {"detail": "Erst den Token in den Einstellungen eintragen"})
+                    c = Client(s.coordinator_url, s.token)
                     try:
-                        return self._json(200, c.json("POST", target, body))
+                        with c._request(method, target, body=body.get("body") if method != "GET" else None,
+                                        headers={"X-Worker-Name": s.name}) as r:
+                            raw = r.read()
+                        return self._send(200, raw or b"{}")
                     except ApiError as e:
                         return self._json(e.status or 502, {"detail": str(e)})
                     except Offline as e:

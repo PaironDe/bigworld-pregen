@@ -104,9 +104,9 @@ def _wait(cond, timeout=60):
 def test_full_run_with_priority_template_and_verify(tmp_path: Path):
     cfg = _setup(tmp_path)
     with Server(cfg) as srv:
-        admin = Client(f"http://127.0.0.1:{cfg.port}", cfg.admin_token)
-        admin.json("POST", "/api/v1/priorities",
-                   {"dim": "minecraft:the_nether", "x0": -100, "z0": -100, "x1": -50, "z1": -50, "label": "Test"})
+        user = Client(f"http://127.0.0.1:{cfg.port}", cfg.worker_token)
+        user.json("POST", "/api/v1/areas", {"dim": "minecraft:the_nether", "x0": -100, "z0": -100, "x1": -50,
+                                            "z1": -50, "label": "Test", "front": True})
         a, b = _engine(tmp_path, cfg, "pc-a"), _engine(tmp_path, cfg, "pc-b")
         a.start()
         time.sleep(0.5)
@@ -172,9 +172,10 @@ def test_wrong_token_and_bundle_mismatch(tmp_path: Path):
         with pytest.raises(Exception) as ei:
             c.acquire(wid, "0" * 64)
         assert getattr(ei.value, "status", None) == 409
-        # Worker-Token darf keine Prioritäten setzen
+        # Worker-Token darf Bereiche anlegen, aber nicht pausieren
+        assert c.json("POST", "/api/v1/areas", {"dim": "minecraft:overworld", "x0": 0, "z0": 0, "x1": 1, "z1": 1})["id"]
         with pytest.raises(Exception) as ei:
-            c.json("POST", "/api/v1/priorities", {"dim": "minecraft:overworld", "x0": 0, "z0": 0, "x1": 1, "z1": 1})
+            c.json("POST", "/api/v1/pause", {"paused": True})
         assert getattr(ei.value, "status", None) == 403
 
 

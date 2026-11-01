@@ -58,13 +58,14 @@ class CompleteBody(BaseModel):
     size: int
 
 
-class PriorityBody(BaseModel):
+class AreaBody(BaseModel):
     dim: str
     x0: int
     z0: int
     x1: int
     z1: int
     label: str = ""
+    front: bool = False
 
 
 class ReorderBody(BaseModel):
@@ -95,6 +96,9 @@ def create_app(cfg: Config, state: State | None = None) -> FastAPI:
         if hmac.compare_digest(t, cfg.worker_token) or hmac.compare_digest(t, cfg.admin_token):
             return t
         raise HTTPException(401, "Token fehlt oder ist falsch")
+
+    def is_admin(request: Request) -> bool:
+        return hmac.compare_digest(token_of(request), cfg.admin_token)
 
     def require_admin(request: Request) -> str:
         if hmac.compare_digest(token_of(request), cfg.admin_token):
@@ -247,25 +251,23 @@ def create_app(cfg: Config, state: State | None = None) -> FastAPI:
         s["bundle"] = h
         return s
 
-    @app.post("/api/v1/priorities/preview")
-    def priority_preview(body: PriorityBody, _=Depends(require_worker)):
-        return {"tiles": state.preview_priority(body.dim, body.x0, body.z0, body.x1, body.z1)}
+    @app.post("/api/v1/areas/preview")
+    def area_preview(body: AreaBody, _=Depends(require_worker)):
+        return state.preview_area(body.dim, body.x0, body.z0, body.x1, body.z1)
 
-    @app.post("/api/v1/priorities")
-    def priority_add(body: PriorityBody, _=Depends(require_admin)):
-        try:
-            return state.add_priority(body.dim, body.x0, body.z0, body.x1, body.z1, body.label)
-        except KeyError:
-            raise HTTPException(400, "Unbekannte Dimension")
+    @app.post("/api/v1/areas")
+    def area_add(body: AreaBody, request: Request, _=Depends(require_worker)):
+        who = request.headers.get("x-worker-name", "")[:64] or ("Admin" if is_admin(request) else "")
+        return state.add_area(body.dim, body.x0, body.z0, body.x1, body.z1, body.label, body.front, who)
 
-    @app.delete("/api/v1/priorities/{pid}")
-    def priority_delete(pid: int, _=Depends(require_admin)):
-        state.delete_priority(pid)
+    @app.delete("/api/v1/areas/{aid}")
+    def area_delete(aid: int, _=Depends(require_worker)):
+        state.delete_area(aid)
         return {"ok": True}
 
-    @app.post("/api/v1/priorities/reorder")
-    def priority_reorder(body: ReorderBody, _=Depends(require_admin)):
-        state.reorder_priorities(body.ids)
+    @app.post("/api/v1/areas/reorder")
+    def area_reorder(body: ReorderBody, _=Depends(require_worker)):
+        state.reorder_areas(body.ids)
         return {"ok": True}
 
     @app.post("/api/v1/pause")

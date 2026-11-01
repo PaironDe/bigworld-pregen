@@ -72,9 +72,9 @@ RAM auf 12–16, **Generieren**.
 ## 6. Danach: echte Generierung
 
 ```bash
-sudo nano /etc/bigworld/coordinator.toml     # Overworld radius = 15360, Nether/End 2000
-sudo -u bigworld bigworld-coord reset --all
-sudo systemctl restart bigworld-coordinator
+sudo -u bigworld bigworld-coord reset --all      # löscht Testkacheln, Bereiche und Staging-Welt
 ```
 
-Overworld mit 15.360 Blöcken = 256 Kacheln, Nether und End je 4.
+Danach in der Weboberfläche (Koordinator oder Worker) unter **Bereiche** anlegen, z. B.
+Overworld Mitte 0, 0, Radius 15360 sowie Nether und End mit Radius 2000.
+In `[verify]` der Konfiguration `tiles = []` setzen, wenn kein Vergleich mehr nötig ist.
