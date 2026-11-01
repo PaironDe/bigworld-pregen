@@ -154,8 +154,10 @@ lease_timeout_minutes = 15
 max_upload_gb = 20
 
 # Was generiert wird, legt ihr in der Weboberfläche als "Bereiche" fest (Koordinator
-# oder Worker-Programm). Hier stehen nur die Dimensionen und ihre Ordner in der Welt.
-# radius (optional): Startbereich um 0,0, wird nur beim allerersten Start angelegt.
+# oder Worker-Programm). Hier stehen die Dimensionen und ihre Ordner in der Welt.
+# radius (optional): Standardbereich um 0,0 in Blöcken. Wird beim ersten Start und nach
+# jedem `reset --all` als Bereich angelegt und lässt sich danach in der Oberfläche
+# verschieben oder löschen.
 # Größter erlaubter Bereich (Kantenlänge in Blöcken) pro Eintrag in der Oberfläche
 max_area_side = 65536
 # true = keine Warnung, wenn Worker mit verschiedenen GPUs gleichzeitig laufen
@@ -164,17 +166,17 @@ mixed_gpus_ok = false
 [[world.dimensions]]
 name = "minecraft:overworld"
 path = "dimensions/minecraft/overworld"
-radius = 2000
+radius = 4000
 
 [[world.dimensions]]
 name = "minecraft:the_nether"
 path = "dimensions/minecraft/the_nether"
-radius = 2000
+radius = 4000
 
 [[world.dimensions]]
 name = "minecraft:the_end"
 path = "dimensions/minecraft/the_end"
-radius = 2000
+radius = 4000
 
 # Dimensionen aus Mods (z. B. Space Reloaded) bei Bedarf ergänzen, dann gibt es dafür
 # einen Tab in der Oberfläche und man kann dort Bereiche anlegen:

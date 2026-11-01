@@ -48,7 +48,7 @@ def _write_config(tmp: Path, port: int) -> config.Config:
     text = text.replace("port = 8770", f"port = {port}")
     text = text.replace('data_dir = "/srv/bigworld"', f'data_dir = "{tmp / "srv"}"')
     text = text.replace("tile_regions = 4", "tile_regions = 1")
-    text = text.replace("radius = 2000", "radius = 512")
+    text = text.replace("radius = 4000", "radius = 512")
     p = tmp / "coordinator.toml"
     p.write_text(text)
     return config.load(p)

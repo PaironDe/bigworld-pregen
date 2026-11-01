@@ -9,7 +9,7 @@ from bigworld.coordinator.state import State, StateError
 def make(tmp: Path, radius: int = 0, tile_regions: int = 4) -> State:
     text = config.example_config()
     text = text.replace('data_dir = "/srv/bigworld"', f'data_dir = "{tmp / "srv"}"')
-    text = text.replace("radius = 2000", f"radius = {radius}")
+    text = text.replace("radius = 4000", f"radius = {radius}")
     text = text.replace("tile_regions = 4", f"tile_regions = {tile_regions}")
     p = tmp / "c.toml"
     p.write_text(text)
@@ -68,13 +68,16 @@ def test_done_tile_survives_area_delete_and_regrows(tmp_path):
     assert tiles(st)[(0, 0)]["status"] == "done"
 
 
-def test_config_radius_seeds_once_and_reset_clears(tmp_path):
-    st = make(tmp_path, radius=2000)
-    assert len(st.areas()) == 3
-    st.reset_tiles(None)
-    assert not st.areas() and not tiles(st)
+def test_default_areas_once_and_back_after_reset(tmp_path):
+    st = make(tmp_path, radius=4000)
+    assert len(st.areas()) == 3 and st.areas()[0]["label"] == "Standard ±4000"
+    assert len(tiles(st)) == 16  # ±4096 Blöcke = 4 x 4 Kacheln
+    st.delete_area(st.areas()[0]["id"])
     st.sync_tiles()
-    assert not st.areas()
+    assert len(st.areas()) == 2  # gelöschter Standardbereich kommt nicht von selbst zurück
+    st.add_area("minecraft:overworld", 0, 0, 511, 511, "eigener")
+    st.reset_tiles(None)
+    assert [a["label"] for a in st.areas()] == ["Standard ±4000"] * 3
 
 
 def test_area_limits(tmp_path):

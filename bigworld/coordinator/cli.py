@@ -187,7 +187,8 @@ def cmd_reset(args) -> int:
         staging = cfg.data_dir / "staging"
         if staging.exists():
             shutil.rmtree(staging)
-        print(f"{n} Kacheln und alle Bereiche gelöscht, Staging geleert. Neue Bereiche in der Weboberfläche anlegen.")
+        print(f"{n} Kacheln und alle Bereiche gelöscht, Staging geleert. "
+              f"Standardbereiche aus der Config neu angelegt: {len(state.areas())}")
     else:
         print(f"{state.reset_tiles(args.tiles)} Kacheln zurückgesetzt")
     return 0

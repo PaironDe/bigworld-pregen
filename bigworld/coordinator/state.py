@@ -128,14 +128,18 @@ class State:
         return self.q("SELECT * FROM areas ORDER BY position, id")
 
     def _seed_areas_from_config(self) -> None:
-        if self.setting("areas_seeded") == "1":
-            return
-        if not self.q("SELECT 1 FROM areas LIMIT 1"):
-            for d in self.cfg.dimensions:
-                if d.radius > 0:
-                    self._insert_area(d.name, -d.radius, -d.radius, d.radius - 1, d.radius - 1,
-                                      "Startbereich (Konfiguration)", front=False)
-        self.set_setting("areas_seeded", "1")
+        """Standardbereich je Dimension (radius in der Config) einmalig anlegen.
+
+        Nach dem Anlegen ist es ein normaler Bereich: verschieben oder löschen in der Oberfläche
+        bleibt bestehen. Erst `reset --all` legt die Standardbereiche wieder neu an.
+        """
+        for d in self.cfg.dimensions:
+            flag = f"default_area:{d.name}"
+            if d.radius <= 0 or self.setting(flag) == "1":
+                continue
+            self._insert_area(d.name, -d.radius, -d.radius, d.radius - 1, d.radius - 1,
+                              f"Standard ±{d.radius}", front=False, created_by="Konfiguration")
+            self.set_setting(flag, "1")
 
     def _insert_area(self, dim: str, x0: int, z0: int, x1: int, z1: int, label: str, front: bool,
                      created_by: str = "") -> int:
@@ -589,7 +593,8 @@ class State:
                 self.x("DELETE FROM areas")
                 self.x("DELETE FROM verify_copies")
                 self.x("DELETE FROM verify_results")
-                self.set_setting("areas_seeded", "1")
+                self.x("DELETE FROM settings WHERE k LIKE 'default_area:%'")
+                self.sync_tiles()  # legt die Standardbereiche aus der Config neu an
                 return n
             for k in keys:
                 self.tile(k)
