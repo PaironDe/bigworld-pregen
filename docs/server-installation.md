@@ -54,25 +54,26 @@ Wichtig in der Datei:
 Liest nur aus dem Volume, schreibt nur nach `/srv/bigworld/bundle-src`:
 
 ```bash
-sudo bigworld-coord bundle prepare \
-  --world "$V/world" \
-  --mods-from ~/mc-pregen/mods \
-  --mods-from "$V/mods" \
-  --config-from "$V/config"
+sudo bigworld-coord bundle prepare --world "$V/world" --mods-from "$V/mods" --config-from "$V/config"
 sudo bigworld-coord bundle fetch-launcher --mc 26.2 --server-root "$V"
-sudo bigworld-coord bundle fetch-modrinth techreborn --mc 26.2      # lädt Pflicht-Abhängigkeiten mit
+```
+
+**Mod-Liste aus dem Modpack übernehmen** (Ordner oder `mods.zip`):
+
+```bash
+sudo bigworld-coord bundle mods ~/mods.zip
 sudo bigworld-coord bundle build
 ```
 
-- Bei doppelten Mods gewinnt der spätere `--mods-from`-Ordner, also die Server-Versionen.
-  Aus `~/mc-pregen/mods` kommen Chunky und das C2ME-OpenCL-Modul dazu.
-- LOD Server Support, Distant Horizons und Voxy werden automatisch weggelassen.
-- `prepare` meldet am Ende Warnungen (z. B. Chunky fehlt). Fehlendes mit
-  `bundle fetch-modrinth <slug> --mc 26.2` nachladen.
+- Weggelassen werden reine Client-Mods (Sodium, Mod Menu), LOD-Mods (Voxy, LSS,
+  Distant Horizons) und Do a Barrel Roll (stürzt mit Chunky ab).
+- Chunky, C2ME und das C2ME-OpenCL-Modul bleiben als Generier-Helfer erhalten, auch wenn
+  sie nicht in der Liste stehen. Fehlt Chunky ganz: `bundle fetch-modrinth chunky --mc 26.2`.
+- Die Ausgabe markiert Mods mit eigener Weltgenerierung und warnt bei fehlenden
+  Abhängigkeiten oder alten Intermediary-Namen.
 - `build` zeigt die Mod-Liste mit Versionen. Das ist der Satz, mit dem generiert wird.
-- Sobald das finale `.mrpack` da ist: Jars nach `/srv/bigworld/bundle-src/mods/` legen und
-  `bundle build` erneut ausführen. Wurden schon Kacheln mit dem alten Bundle generiert,
-  verweigert `build` das, außer mit `reset --all` vorher.
+  Wurden schon Kacheln mit einem anderen Bundle generiert, verweigert `build` das,
+  außer nach `reset --all`.
 
 ## 4. Dienst starten
 

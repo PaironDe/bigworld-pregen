@@ -62,6 +62,11 @@ def cmd_bundle(args) -> int:
             print(f"WARNUNG: {w}")
         print(f"bundle-src liegt in {cfg.bundle_src}. Danach: bigworld-coord bundle build")
         return 0
+    if args.bundle_cmd == "mods":
+        warnings = bundle.import_mods(cfg, Path(args.source))
+        for w in warnings:
+            print(f"WARNUNG: {w}")
+        return 0
     if args.bundle_cmd == "fetch-modrinth":
         bundle.fetch_modrinth(cfg, args.slug, args.mc)
         return 0
@@ -236,6 +241,8 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--mods-from", action="append", default=[], help="Ordner mit Mod-Jars (mehrfach möglich)")
     pr.add_argument("--config-from", help="config/-Ordner mit Mod-Configs")
     pr.add_argument("--launcher", help="Fabric-Server-Launcher-Jar")
+    md = bs.add_parser("mods", help="bundle-src/mods durch eine Modpack-Liste ersetzen (Ordner oder ZIP)")
+    md.add_argument("source")
     fm = bs.add_parser("fetch-modrinth", help="Mod von Modrinth nach bundle-src/mods laden")
     fm.add_argument("slug")
     fm.add_argument("--mc", required=True)

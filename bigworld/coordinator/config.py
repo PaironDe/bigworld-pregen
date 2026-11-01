@@ -176,6 +176,12 @@ name = "minecraft:the_end"
 path = "dimensions/minecraft/the_end"
 radius = 2000
 
+# Dimensionen aus Mods (z. B. Space Reloaded) bei Bedarf ergänzen, dann gibt es dafür
+# einen Tab in der Oberfläche und man kann dort Bereiche anlegen:
+# [[world.dimensions]]
+# name = "spacereloaded:moon"
+# path = "dimensions/spacereloaded/moon"
+
 [verify]
 # Diese Kacheln werden von zwei verschiedenen Workern generiert und chunkweise
 # verglichen (Determinismus-Test). Format: "<dimension>|<tx>|<tz>"

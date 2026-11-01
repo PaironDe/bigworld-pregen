@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import io
 import json
 import os
+import re
 import shutil
 import urllib.parse
 import urllib.request
@@ -194,6 +196,142 @@ def _fix_owner(cfg: Config, path: Path) -> None:
         os.chown(dirpath, st.st_uid, st.st_gid)
         for n in files:
             os.chown(os.path.join(dirpath, n), st.st_uid, st.st_gid)
+
+
+# ---------------------------------------------------------------------------
+# Mod-Liste übernehmen (z. B. aus einem mods.zip des Modpacks)
+# ---------------------------------------------------------------------------
+
+# Nur zum Generieren nötig; bleiben im Bundle, auch wenn die Modpack-Liste sie nicht enthält
+GENERATION_HELPER_IDS = {"chunky", "c2me", "c2me-opts-accel-opencl"}
+WORLDGEN_DIR = re.compile(r"^data/[^/]+/(worldgen/(configured_feature|placed_feature|structure|structure_set|biome|"
+                          r"noise_settings|density_function|template_pool|configured_carver)|dimension)/")
+IGNORED_DEPS = {"minecraft", "java", "fabricloader", "fabric"}
+
+
+def scan_jar(data: bytes, name: str, depth: int = 0) -> list[dict]:
+    """fabric.mod.json, Weltgenerierung und verschachtelte Jars einer Mod untersuchen."""
+    out: list[dict] = []
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        return out
+    names = z.namelist()
+    meta: dict = {}
+    if "fabric.mod.json" in names:
+        try:
+            meta = json.loads(z.read("fabric.mod.json").decode("utf-8", "replace"), strict=False)
+        except json.JSONDecodeError:
+            meta = {}
+    biome_mod = intermediary = False
+    for n in names:
+        if n.endswith(".class"):
+            b = z.read(n)
+            biome_mod = biome_mod or b"fabric/api/biome/v1/BiomeModifications" in b
+            intermediary = intermediary or b"net/minecraft/class_" in b
+    provides = meta.get("provides") or []
+    out.append({
+        "name": name, "depth": depth, "id": meta.get("id") or "", "version": str(meta.get("version", "")),
+        "environment": meta.get("environment", "*"), "depends": meta.get("depends") or {},
+        "provides": provides if isinstance(provides, list) else [],
+        "worldgen_files": sum(1 for n in names if WORLDGEN_DIR.match(n)),
+        "biome_modifications": biome_mod, "intermediary": intermediary,
+    })
+    for j in meta.get("jars") or []:
+        f = j.get("file") if isinstance(j, dict) else None
+        if f and f in names:
+            out += scan_jar(z.read(f), f"{name} > {f.split('/')[-1]}", depth + 1)
+    return out
+
+
+def import_mods(cfg: Config, source: Path, log=print) -> list[str]:
+    """Ersetzt bundle-src/mods durch die Mods aus einem Ordner oder ZIP (Modpack-Liste).
+
+    Weggelassen werden reine Client-Mods, LOD-Mods und Mods, die die Generierung stören
+    (siehe EXCLUDED_*). Chunky und C2ME bleiben als Generier-Helfer erhalten.
+    """
+    jars: dict[str, bytes] = {}
+    if source.is_dir():
+        for p in sorted(source.rglob("*.jar")):
+            jars[p.name] = p.read_bytes()
+    else:
+        with zipfile.ZipFile(source) as z:
+            for n in z.namelist():
+                if n.lower().endswith(".jar") and "/META-INF/" not in "/" + n:
+                    jars[n.split("/")[-1]] = z.read(n)
+    if not jars:
+        raise BundleError(f"Keine .jar-Dateien in {source}")
+
+    mods_dir = cfg.bundle_src / "mods"
+    helpers = {}
+    if mods_dir.is_dir():
+        for p in mods_dir.glob("*.jar"):
+            mid = mod_info(p)["id"]
+            if mid in GENERATION_HELPER_IDS:
+                helpers[p.name] = p.read_bytes()
+
+    selected: dict[str, bytes] = {}
+    scans: list[dict] = []
+    warnings: list[str] = []
+    log(f"{len(jars)} Mods in {source.name}:")
+    for name, data in sorted(jars.items(), key=lambda kv: kv[0].lower()):
+        info = scan_jar(data, name)
+        top = info[0] if info else {"id": "", "environment": "*", "version": ""}
+        reason = None
+        if not info or not top["id"]:
+            reason = "keine Fabric-Mod"
+        elif top["environment"] == "client":
+            reason = "nur Client"
+        elif top["id"].lower() in EXCLUDED_MOD_IDS or any(fnmatch.fnmatch(name, g) for g in EXCLUDED_MOD_GLOBS):
+            reason = "nicht für Generier-PCs (LOD-Mod bzw. stört Chunky)"
+        if reason:
+            log(f"  -  {name:58s} weggelassen: {reason}")
+            continue
+        selected[name] = data
+        scans += info
+        tags = []
+        if top["worldgen_files"] or any(i["worldgen_files"] for i in info[1:]):
+            tags.append(f"Weltgenerierung ({sum(i['worldgen_files'] for i in info)} Dateien)")
+        if any(i["biome_modifications"] for i in info if not i["id"].startswith("fabric-")):
+            tags.append("fügt per Code Features in Biome ein")
+        log(f"  +  {name:58s} {top['id']} {top['version']}" + (f"   [{', '.join(tags)}]" if tags else ""))
+        bad = [i["name"] for i in info if i["intermediary"] and "intermediaryfallback" not in i["name"]
+               and not re.search(r"-(fabric|forge|neoforge)-\d", i["name"])]
+        if bad:
+            warnings.append(f"{name}: enthält alte Intermediary-Namen ({', '.join(bad)}), kann auf 26.x abstürzen")
+    for name, data in helpers.items():
+        if name not in selected and mod_info_bytes(data)["id"] not in {i["id"] for i in scans}:
+            selected[name] = data
+            scans += scan_jar(data, name)
+            log(f"  +  {name:58s} (Generier-Helfer, aus bisherigem Bundle übernommen)")
+    have = {i["id"] for i in scans if i["id"]} | {p for i in scans for p in i["provides"]}
+    for i in scans:
+        if i["depth"]:
+            continue
+        missing = [d for d in i["depends"] if d not in have and d not in IGNORED_DEPS]
+        if missing:
+            warnings.append(f"{i['name']}: Abhängigkeit fehlt: {', '.join(missing)}")
+    for helper in ("chunky",):
+        if helper not in have:
+            warnings.append("Chunky fehlt. Nachladen: bigworld-coord bundle fetch-modrinth chunky --mc 26.2")
+
+    if mods_dir.exists():
+        backup = cfg.bundle_src / "mods.old"
+        if backup.exists():
+            shutil.rmtree(backup)
+        mods_dir.rename(backup)
+        log(f"Bisherige Mods nach {backup} verschoben")
+    mods_dir.mkdir(parents=True)
+    for name, data in selected.items():
+        (mods_dir / name).write_bytes(data)
+    _fix_owner(cfg, cfg.bundle_src)
+    log(f"{len(selected)} Mods im Bundle. Danach: bigworld-coord bundle build")
+    return warnings
+
+
+def mod_info_bytes(data: bytes) -> dict:
+    info = scan_jar(data, "x")
+    return {"id": info[0]["id"] if info else ""}
 
 
 # ---------------------------------------------------------------------------

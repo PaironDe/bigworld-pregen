@@ -14,8 +14,10 @@ auf dem Server.
 - Minecraft **Fabric 26.2**, Java 25, Chunky, C2ME + C2ME-OpenCL-Modul
 - Datapacks: JJThunder To The Max, Trek, Towns and Towers (26.2-Versionen, wie bisher)
 - Gleicher Seed wie die bisherige Welt (Seed in `data/minecraft/world_gen_settings.dat`)
-- Neue Mods mit Weltgenerierung: Tech Reborn 6.1.1, Mystical Agriculture (inoffizieller
-  Fabric-Port), Advanced Reborn. Finale Liste kommt als `.mrpack`.
+- Mods mit eigener Weltgenerierung: Tech Reborn 6.1.1 (Erze, Gummibäume), AE2 Fabricated
+  26.2.1-alpha.1 (Meteoriten), Space Reloaded 1.0.2 (10 Overworld-Erze, Mond/Mars/Orbit/
+  Asteroidengürtel). Vollständige Liste: `mods.zip` vom 01.11.2026, übernommen per
+  `bigworld-coord bundle mods`.
 - Größe: Overworld 15.360 Blöcke Radius, Nether und End je 2.000
 
 ## Rechner
