@@ -219,6 +219,11 @@ def compare_mods(cfg: Config, bundle_hash: str, live_mods: Path) -> tuple[list[s
     return errors, notes
 
 
+# Nur für die Generier-PCs: Chunky braucht der Live-Server nicht, und C2ME-OpenCL stürzt im
+# Pterodactyl-Container ab (keine GPU/libOpenCL darin).
+LIVE_SKIP_IDS = {"chunky", "c2me-opts-accel-opencl"}
+
+
 @dataclass
 class ModSync:
     add: list[Path]       # Jars aus dem Bundle, die live fehlen oder anders sind
@@ -233,7 +238,7 @@ def plan_mod_sync(cfg: Config, bundle_hash: str, live_mods: Path) -> ModSync:
     manifest = bundle.load_manifest(cfg, bundle_hash)
     wanted = {m["id"]: (m["version"], bundle.file_path(cfg, bundle_hash, f"mods/{m['file']}"))
               for m in manifest["mods"]
-              if m.get("id") and m["id"] not in ("chunky",)}
+              if m.get("id") and m["id"] not in LIVE_SKIP_IDS}
     live = {}
     for jar in sorted(live_mods.glob("*.jar")) if live_mods.is_dir() else []:
         info = bundle.mod_info(jar)
