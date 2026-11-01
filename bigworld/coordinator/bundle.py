@@ -38,9 +38,13 @@ TEMPLATE_FILES = [
 ]
 REQUIRED = [LAUNCHER, "template/level.dat", "template/data/minecraft/world_gen_settings.dat"]
 
-# Mods, die auf den Generier-PCs nichts verloren haben
-EXCLUDED_MOD_IDS = {"lod-server-support", "lodserversupport", "lss", "distanthorizons", "voxy"}
-EXCLUDED_MOD_GLOBS = ["lod-server-support*", "DistantHorizons*", "voxy*"]
+# Mods, die auf den Generier-PCs nichts verloren haben:
+# - LOD-Mods: nur für Spieler bzw. den Live-Server
+# - do_a_barrel_roll: bringt fabric-permissions-api 0.6.1 (Intermediary-Namen) mit, das auf 26.x
+#   abstürzt, sobald Chunky einen Konsolenbefehl prüft (NoClassDefFoundError class_2172).
+#   Keine Weltgenerierung, daher gefahrlos weglassen.
+EXCLUDED_MOD_IDS = {"lod-server-support", "lodserversupport", "lss", "distanthorizons", "voxy", "do_a_barrel_roll"}
+EXCLUDED_MOD_GLOBS = ["lod-server-support*", "DistantHorizons*", "voxy*", "do_a_barrel_roll*"]
 
 DEFAULT_PROPERTIES = {
     "online-mode": "false",
