@@ -93,3 +93,17 @@ def test_preview_counts_only_new(tmp_path):
     st.add_area("minecraft:overworld", 0, 0, 1023, 1023)
     p = st.preview_area("minecraft:overworld", 0, 0, 2047, 1023)
     assert p["regions"] == 8 and p["new_regions"] == 4 and p["new_chunks"] == 4096
+
+
+def test_init_preset_keeps_tokens_from_broken_file(tmp_path):
+    from bigworld.coordinator import cli
+
+    p = tmp_path / "c.toml"
+    p.write_text('C=/etc/x\nWT=$(sudo grep ...)\nworker_token = "gyl6NKLzpOzAkiC97UYfFmjHi2NHgKVg"\nadmin_token = "$AT"\n')
+    assert cli.main(["--config", str(p), "init", "--preset", "bigworld", "--force"]) == 0
+    cfg = config.load(p)
+    assert cfg.worker_token == "gyl6NKLzpOzAkiC97UYfFmjHi2NHgKVg"
+    assert len(cfg.admin_token) >= 16 and cfg.mixed_gpus_ok
+    assert [d.name for d in cfg.dimensions][-2:] == ["spacereloaded:moon", "spacereloaded:mars"]
+    assert cfg.verify_tiles == [] and cfg.deploy.backup_dir == ""
+    assert list(tmp_path.glob("c.toml.bak-*"))

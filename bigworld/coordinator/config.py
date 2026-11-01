@@ -85,7 +85,11 @@ class Config:
 def load(path: str | os.PathLike | None = None) -> Config:
     p = Path(path or os.environ.get("BIGWORLD_CONFIG", DEFAULT_CONFIG_PATH))
     with open(p, "rb") as f:
-        raw = tomllib.load(f)
+        try:
+            raw = tomllib.load(f)
+        except tomllib.TOMLDecodeError as e:
+            raise SystemExit(f"Konfiguration {p} ist kein gültiges TOML ({e}). "
+                             "Neu schreiben: sudo bigworld-coord init --preset bigworld --force") from None
     srv = raw.get("server", {})
     world = raw.get("world", {})
     dims = [
@@ -206,9 +210,102 @@ post_start_commands = []
 """
 
 
-def example_config() -> str:
-    return EXAMPLE.format(
-        worker_token=secrets.token_urlsafe(24),
-        admin_token=secrets.token_urlsafe(24),
-        volume_world=ALLOWED_VOLUME_WORLD,
-    )
+BIGWORLD = """\
+# Konfiguration des Big-World-Koordinators
+# Änderungen werden nach `sudo systemctl restart bigworld-coordinator` aktiv.
+# Neu schreiben (Tokens bleiben erhalten): sudo bigworld-coord init --preset bigworld --force
+
+[server]
+# Nur auf der Tailscale-IP lauschen: aus dem LAN und dem Internet nicht erreichbar.
+host = "100.72.176.11"
+port = 8770
+data_dir = "/srv/bigworld"
+# Token für die Worker-Programme (an Mitspieler weitergeben); erlaubt auch Bereiche anlegen
+worker_token = "{worker_token}"
+# Token für Pause usw. in der Weboberfläche (nur für dich)
+admin_token = "{admin_token}"
+
+[world]
+# Kachelgröße in Regionen (1 Region = 512 Blöcke). 4 -> 2.048 x 2.048 Blöcke.
+tile_regions = 4
+# Ohne Lebenszeichen eines Workers wird seine Kachel nach dieser Zeit neu vergeben.
+lease_timeout_minutes = 15
+# Obergrenze für ein einzelnes Kachelpaket
+max_upload_gb = 20
+# Größter Bereich pro Eintrag in der Oberfläche (Kantenlänge in Blöcken)
+max_area_side = 65536
+# Verschiedene GPUs gemischt: im Test geprüft und akzeptiert, keine Warnung
+mixed_gpus_ok = true
+
+# radius = Standardbereich um 0,0 in Blöcken (in jede Richtung). Wird beim ersten Start
+# und nach jedem `reset --all` als Bereich angelegt, danach in der Oberfläche frei änderbar.
+[[world.dimensions]]
+name = "minecraft:overworld"
+path = "dimensions/minecraft/overworld"
+radius = 4000
+
+[[world.dimensions]]
+name = "minecraft:the_nether"
+path = "dimensions/minecraft/the_nether"
+radius = 4000
+
+[[world.dimensions]]
+name = "minecraft:the_end"
+path = "dimensions/minecraft/the_end"
+radius = 4000
+
+[[world.dimensions]]
+name = "spacereloaded:moon"
+path = "dimensions/spacereloaded/moon"
+radius = 4000
+
+[[world.dimensions]]
+name = "spacereloaded:mars"
+path = "dimensions/spacereloaded/mars"
+radius = 4000
+
+[verify]
+# Determinismus-Test erledigt, keine doppelte Kachel mehr
+tiles = []
+
+[deploy]
+# Fest vorgegeben, andere Pfade verweigert der Deploy-Befehl.
+volume_world = "{volume_world}"
+# Sicherung der alten Welt als tar vor dem Löschen. Leer = keine Sicherung.
+backup_dir = ""
+# Pterodactyl-Panel und Client-API-Key (Konto -> API-Zugangsdaten), erst zum Deploy nötig
+panel_url = "{panel_url}"
+api_key = "{api_key}"
+server_id = "fd1a91d3"
+owner = "pterodactyl"
+# LSS-Config relativ zum Server-Ordner; der Deploy setzt dort generation.enabled: false
+lss_config = "config/lss-server-config.yaml"
+post_start_commands = []
+"""
+
+PRESETS = {"standard": EXAMPLE, "bigworld": BIGWORLD}
+_TOKEN_RE = r'^\s*{key}\s*=\s*"([A-Za-z0-9_\-]{{16,}})"'
+_TEXT_RE = r'^\s*{key}\s*=\s*"([^"$]*)"'
+
+
+def existing_values(text: str) -> dict:
+    """Tokens und Panel-Daten aus einer (evtl. kaputten) alten Datei herauslesen."""
+    import re
+
+    out = {}
+    for key in ("worker_token", "admin_token"):
+        m = re.search(_TOKEN_RE.format(key=key), text, re.M)
+        if m:
+            out[key] = m.group(1)
+    for key in ("panel_url", "api_key"):
+        m = re.search(_TEXT_RE.format(key=key), text, re.M)
+        if m:
+            out[key] = m.group(1)
+    return out
+
+
+def example_config(preset: str = "standard", values: dict | None = None) -> str:
+    v = {"worker_token": secrets.token_urlsafe(24), "admin_token": secrets.token_urlsafe(24),
+         "panel_url": "", "api_key": "", "volume_world": ALLOWED_VOLUME_WORLD}
+    v.update({k: x for k, x in (values or {}).items() if x is not None})
+    return PRESETS[preset].format(**v)

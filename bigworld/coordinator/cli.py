@@ -19,17 +19,46 @@ def _cfg(args):
 
 
 def cmd_init(args) -> int:
+    import shutil
+    import time as _time
+
     from . import config
 
     p = Path(args.config or config.DEFAULT_CONFIG_PATH)
+    values: dict = {}
     if p.exists():
-        print(f"{p} existiert bereits, nichts geändert.")
-        return 0
+        if not args.force:
+            print(f"{p} existiert bereits, nichts geändert. Neu schreiben mit --force (Tokens bleiben erhalten).")
+            return 0
+        values = config.existing_values(p.read_text(encoding="utf-8", errors="replace"))
+        backup = p.with_name(p.name + f".bak-{_time.strftime('%Y%m%d-%H%M%S')}")
+        shutil.copy2(p, backup)
+        print(f"Alte Datei gesichert: {backup}")
+    if args.worker_token:
+        values["worker_token"] = args.worker_token
+    if args.admin_token:
+        values["admin_token"] = args.admin_token
+    text = config.example_config(args.preset, values)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(config.example_config())
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    import tomllib
+
+    tomllib.loads(text)  # Selbstprüfung
+    os.replace(tmp, p)
     os.chmod(p, 0o640)
-    print(f"Beispielkonfiguration mit neuen Tokens geschrieben: {p}")
-    print("Bitte prüfen (Radius, Pfade) und danach `bigworld-coord bundle prepare ...` ausführen.")
+    try:
+        import grp
+
+        os.chown(p, 0, grp.getgrnam("bigworld").gr_gid)
+    except (KeyError, PermissionError, ImportError, OSError):
+        pass
+    print(f"Geschrieben: {p} (Vorlage '{args.preset}')")
+    for key in ("worker_token", "admin_token"):
+        if key in values:
+            print(f"  {key}: übernommen")
+        else:
+            print(f"  {key}: NEU erzeugt -> {config.existing_values(text)[key]}")
     return 0
 
 
@@ -232,7 +261,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--config", help="Pfad zur Konfiguration (Standard /etc/bigworld/coordinator.toml)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("init", help="Beispielkonfiguration mit Tokens anlegen").set_defaults(fn=cmd_init)
+    ini = sub.add_parser("init", help="Konfiguration anlegen oder mit --force neu schreiben (Tokens bleiben)")
+    ini.add_argument("--preset", choices=["standard", "bigworld"], default="standard")
+    ini.add_argument("--force", action="store_true", help="vorhandene Datei ersetzen (Sicherung wird angelegt)")
+    ini.add_argument("--worker-token")
+    ini.add_argument("--admin-token")
+    ini.set_defaults(fn=cmd_init)
     sub.add_parser("serve", help="Koordinator starten (systemd)").set_defaults(fn=cmd_serve)
 
     b = sub.add_parser("bundle", help="Bundle für die Worker vorbereiten und bauen")
