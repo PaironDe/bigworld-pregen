@@ -298,6 +298,19 @@ def cmd_pause(args) -> int:
     return 0
 
 
+def cmd_worker(args) -> int:
+    from .state import State, StateError
+
+    st = State(_cfg(args))
+    try:
+        name = st.set_worker_paused(args.name, args.action == "pause")
+    except StateError as e:
+        print(f"FEHLER: {e}")
+        return 1
+    print(f"{name}: " + ("pausiert, die laufende Kachel wird noch fertig" if args.action == "pause" else "läuft wieder"))
+    return 0
+
+
 def cmd_live_merge(args) -> int:
     from . import live
     from .state import State
@@ -402,6 +415,10 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--sync-mods", action="store_true", help="Live-Mods an das Bundle angleichen (alte werden gesichert)")
     d.add_argument("--ignore-mods", action="store_true", help=argparse.SUPPRESS)
     d.set_defaults(fn=cmd_deploy)
+    wk = sub.add_parser("worker", help="Einen einzelnen Worker pausieren/fortsetzen (andere laufen weiter)")
+    wk.add_argument("action", choices=["pause", "resume"])
+    wk.add_argument("name", help="Name des Workers, z. B. serversoeren")
+    wk.set_defaults(fn=cmd_worker)
     lv = sub.add_parser("live-merge", help="Fertige Kacheln in die Live-Welt einfügen (nur fehlende Chunks)")
     lv.add_argument("--scheduled", action="store_true", help="vom Timer: ohne Rückfrage, nur wenn [live_merge] enabled")
     lv.add_argument("--dry-run", action="store_true", help="nur anzeigen, was eingefügt würde")

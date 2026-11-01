@@ -173,7 +173,9 @@ function render() {
   $("verify").innerHTML = vr || (copies ? `<span class="muted">${copies}<br>Warte auf zweite Generierung.</span>` : "Noch kein Vergleich.");
 
   $("workers").innerHTML = status.workers.map((w) => `
-    <tr><td><span class="dot ${w.online ? "on" : ""}"></span>${esc(w.name)}<div class="muted" style="font-size:12px">${esc(w.os || "")}</div></td>
+    <tr><td><span class="dot ${w.online ? "on" : ""}"></span>${esc(w.name)}${w.paused ? ' <b class="err">pausiert</b>' : ""}
+      <div class="muted" style="font-size:12px">${esc(w.os || "")}</div>
+      ${isAdmin ? `<button class="wpause" data-name="${esc(w.name)}" data-p="${w.paused ? 0 : 1}" style="font-size:12px; padding:2px 8px; margin-top:4px">${w.paused ? "Fortsetzen" : "Pausieren"}</button>` : ""}</td>
     <td>${esc(w.gpu || "–")}<div class="muted" style="font-size:12px">${esc(w.driver || "")}</div></td>
     <td>${w.tile ? `${esc(w.kind)} ${esc(w.tile === "template" ? "Vorlage" : w.tile.replace("minecraft:", ""))}<div class="muted" style="font-size:12px">${esc(w.phase || "")}${w.uploads ? ` · ${w.uploads} Upload(s)` : ""}</div>` : "–"}</td>
     <td>${w.tile ? Math.round(100 * (w.progress || 0)) + " %" : ""}</td>
@@ -182,6 +184,11 @@ function render() {
     <td>${w.tiles_done}</td>
     <td class="muted" style="font-size:12px">${esc(w.message || "")}${w.overrides && w.overrides.length ? `<div>Overrides: ${esc(w.overrides.join(", "))}</div>` : ""}</td></tr>`).join("")
     || `<tr><td colspan="8" class="muted">Noch kein Worker verbunden.</td></tr>`;
+  document.querySelectorAll(".wpause").forEach((b) => b.onclick = async () => {
+    await api(`/api/v1/workers/${encodeURIComponent(b.dataset.name)}/pause`,
+      { method: "POST", body: JSON.stringify({ paused: b.dataset.p === "1" }) });
+    refresh();
+  });
 }
 
 async function refresh() {

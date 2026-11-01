@@ -193,3 +193,35 @@ def test_unreadable_live_chunk_is_kept(tmp_path):
     r = anvil.RegionFile(live_file)
     assert r.blob(0)[4] == anvil.COMP_LZ4   # unangetastet
     assert tag_of(r, 1) == 1                # fehlender Chunk ergänzt
+
+
+def test_merge_waits_while_deploy_holds_staging(tmp_path):
+    import threading
+    import time as _t
+    from bigworld.coordinator import merge
+
+    st = make_state(tmp_path)
+    cfg = st.cfg
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
+    done = threading.Event()
+    with merge.staging_locked(cfg, logf=lambda *_: None):
+        t = threading.Thread(target=lambda: (merge._enter_merge(cfg, "x").unlink(), done.set()))
+        t.start()
+        _t.sleep(0.5)
+        assert not done.is_set()          # wartet, solange der Deploy die Sperre hält
+    t.join(10)
+    assert done.is_set()
+
+
+def test_worker_pause_only_affects_that_worker(tmp_path):
+    st = make_state(tmp_path)
+    a = st.register_worker("server", {})
+    b = st.register_worker("pc", {})
+    st.set_template("h", "x")
+    st.set_worker_paused("server", True)
+    ra = st.acquire(a, "h", "h")
+    assert ra["wait"] and "pausiert" in ra["reason"]
+    assert st.acquire(b, "h", "h").get("kind") == "gen"
+    st.set_worker_paused("server", False)
+    assert st.acquire(a, "h", "h").get("kind") == "gen"
+    assert any(w["paused"] is False for w in st.status()["workers"])

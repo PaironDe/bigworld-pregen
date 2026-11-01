@@ -275,6 +275,10 @@ def create_app(cfg: Config, state: State | None = None) -> FastAPI:
         state.set_setting("paused", "1" if body.paused else "0")
         return {"paused": body.paused}
 
+    @app.post("/api/v1/workers/{name}/pause")
+    def worker_pause(name: str, body: PauseBody, _=Depends(require_admin)):
+        return {"worker": state.set_worker_paused(name, body.paused), "paused": body.paused}
+
     @app.post("/api/v1/tiles/reset")
     def tiles_reset(body: ResetBody, _=Depends(require_admin)):
         return {"reset": state.reset_tiles(body.keys)}

@@ -139,8 +139,6 @@ def run(cfg: Config, state: State, allow_incomplete: bool, ask=input, log=print,
     if open_tiles and not allow_incomplete:
         raise DeployError(f"{open_tiles} Kacheln sind nicht fertig ({counts}). Abbruch. "
                           "Mit --allow-incomplete trotzdem einsetzen.")
-    if any(w["tile"] for w in st["workers"]):
-        raise DeployError("Es laufen noch Kacheln auf Workern. Erst pausieren und warten.")
 
     panel = Panel(cfg.deploy.panel_url, cfg.deploy.api_key, cfg.deploy.server_id)
     server_state = panel.state()
@@ -204,8 +202,6 @@ def run(cfg: Config, state: State, allow_incomplete: bool, ask=input, log=print,
     if answer.strip() != CONFIRM_TEXT:
         raise DeployError("Abgebrochen, nichts geändert")
 
-    state.set_setting("paused", "1")
-
     log("1/6 Server stoppen ...")
     if server_state != "offline":
         panel.power("stop")
@@ -231,17 +227,20 @@ def run(cfg: Config, state: State, allow_incomplete: bool, ask=input, log=print,
         log("3/6 Alte Welt löschen ...")
         shutil.rmtree(vol_world)
 
-    log("4/6 Neue Welt einsetzen ...")
-    if same_fs:
-        os.rename(staging, vol_world)
-    else:
-        shutil.copytree(staging, vol_world)
-        shutil.rmtree(staging)
-
     from .live import write_marker
+    from .merge import staging_locked
 
-    write_marker(vol_world, h)
-    state.mark_live(None)
+    log("4/6 Neue Welt einsetzen (Worker generieren weiter, neue Kacheln warten kurz) ...")
+    with staging_locked(cfg, log):
+        if same_fs:
+            os.rename(staging, vol_world)
+        else:
+            shutil.copytree(staging, vol_world)
+            shutil.rmtree(staging)
+        write_marker(vol_world, h)
+        # Alles, was jetzt fertig ist, steckt in der eingesetzten Welt; spätere Kacheln
+        # landen in einer neuen Staging-Welt und kommen per Live-Merge dazu.
+        state.mark_live(None)
 
     log("5/6 Besitzer auf pterodactyl setzen ...")
     uid = pwd.getpwnam(cfg.deploy.owner).pw_uid

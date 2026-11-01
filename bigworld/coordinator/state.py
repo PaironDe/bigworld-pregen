@@ -324,6 +324,16 @@ class State:
                 )
             return wid
 
+    def worker_paused(self, wid: str) -> bool:
+        return self.setting(f"wpause:{wid}", "0") == "1"
+
+    def set_worker_paused(self, name_or_id: str, paused: bool) -> str:
+        rows = self.q("SELECT id, name FROM workers WHERE id=? OR name=?", name_or_id, name_or_id)
+        if not rows:
+            raise StateError(f"Unbekannter Worker {name_or_id}", 404)
+        self.set_setting(f"wpause:{rows[0]['id']}", "1" if paused else "0")
+        return rows[0]["name"]
+
     def touch_worker(self, wid: str) -> None:
         rows = self.q("SELECT id FROM workers WHERE id=?", wid)
         if not rows:
@@ -377,6 +387,8 @@ class State:
             )
             if own:
                 return self._lease_response(own[0])
+            if self.worker_paused(wid):
+                return {"wait": True, "reason": "Dieser Rechner ist im Koordinator pausiert (andere Worker laufen weiter)"}
 
             # Ohne Vorlage-Welt für dieses Bundle wird zuerst die Vorlage erzeugt
             if not self.template_sha(bundle_hash):
@@ -773,6 +785,7 @@ class State:
                     "cps": cps, "eta": lease["eta"] if lease else None,
                     "message": lease["message"] if lease else None,
                     "uploads": uploads,
+                    "paused": self.worker_paused(w["id"]),
                 })
             remaining = totals["chunks_total"] - totals["chunks_done"] - totals["chunks_running"]
             totals["cps"] = total_cps

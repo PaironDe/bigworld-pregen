@@ -111,7 +111,8 @@ sudo -u bigworld bigworld-coord reset "minecraft:overworld|3|-2"    # eine Kache
 sudo -u bigworld bigworld-coord reset --all            # alles neu (löscht Staging)
 sudo -u bigworld bigworld-coord reset --dim minecraft:overworld   # nur eine Dimension neu
 sudo -u bigworld bigworld-coord recheck                # Stichprobe nach Bundle-Wechsel
-sudo -u bigworld bigworld-coord pause | resume
+sudo -u bigworld bigworld-coord pause | resume          # alle Worker
+sudo -u bigworld bigworld-coord worker pause serversoeren   # nur diesen Rechner (auch im Koordinator per Knopf)
 sudo bigworld-coord seed "$V/world/data/minecraft/world_gen_settings.dat"
 ```
 
@@ -132,6 +133,10 @@ Server starten. Verändert wird ausschließlich
 nach `mods.bak-<Zeit>` gesichert, reine Live-Mods wie LSS bleiben). Ohne den Schalter bricht
 der Deploy ab, wenn dem Live-Server Bundle-Mods fehlen. Nach dem Deploy liegt in der Welt
 `bigworld-deploy.json` (Zeitpunkt, Bundle, Seed).
+
+Die Worker müssen für den Deploy nicht pausiert werden: Während die Welt eingesetzt wird,
+warten neue Kachel-Uploads kurz; alles danach Fertige landet in einer neuen Staging-Welt und
+kommt per Live-Merge in die Live-Welt.
 
 ## Live-Merge (nach dem ersten Deploy)
 

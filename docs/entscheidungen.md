@@ -4,6 +4,10 @@ Neueste oben. Format: Datum · Entscheidung · Begründung.
 
 ## 01.11.2026
 
+- **Einzelne Worker pausierbar** (Knopf im Koordinator bzw. `worker pause <name>`): Der Server
+  soll beim Spielen nicht mitrechnen, nur verteilen, zusammenführen und LODs bauen.
+- **Deploy ohne globale Pause.** Eine Sperrdatei hält neue Zusammenführungen kurz an, laufende
+  werden abgewartet; danach geht es in einer neuen Staging-Welt weiter.
 - **Ad Astra (privater 26.2-Port, Stand port.2) kommt ins Bundle**, zusammen mit
   Towns and Towers (+ CristelLib) und Trek. Getestet auf einem separaten Testserver und im
   Spiel (Rakete, Mond, Seite an Seite mit Space Reloaded). port.2 definiert die 11

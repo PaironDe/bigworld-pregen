@@ -7,6 +7,8 @@ import os
 import shutil
 import tarfile
 import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from ..common import package
@@ -39,6 +41,87 @@ def init_staging(cfg: Config, bundle_hash: str) -> None:
     log.info("Staging-Welt mit Template aus Bundle %s angelegt", bundle_hash[:12])
 
 
+# Sperre für den Deploy: Der Deploy verschiebt die Staging-Welt ins Volume. Solange die Sperrdatei
+# existiert, wartet das Zusammenführen; laufende Zusammenführungen melden sich mit einer Markierung.
+def _lock_path(cfg: Config) -> Path:
+    return cfg.data_dir / "staging.lock"
+
+
+def _marker_dir(cfg: Config) -> Path:
+    return cfg.data_dir / "merging"
+
+
+def _lock_active(cfg: Config) -> bool:
+    lock = _lock_path(cfg)
+    try:
+        pid = int(lock.read_text().strip() or 0)
+    except (OSError, ValueError):
+        return lock.exists()
+    if pid:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            log.warning("Verwaiste Staging-Sperre (Prozess %d existiert nicht mehr) entfernt", pid)
+            lock.unlink(missing_ok=True)
+            return False
+        except PermissionError:
+            pass
+    return True
+
+
+def _enter_merge(cfg: Config, name: str) -> Path:
+    d = _marker_dir(cfg)
+    d.mkdir(parents=True, exist_ok=True)
+    marker = d / name
+    waited = False
+    while True:
+        while _lock_active(cfg):
+            if not waited:
+                log.info("Deploy läuft, Zusammenführen von %s wartet", name)
+                waited = True
+            time.sleep(5)
+        marker.write_text("")
+        if not _lock_active(cfg):
+            return marker
+        marker.unlink(missing_ok=True)
+
+
+@contextmanager
+def staging_locked(cfg: Config, logf=print, timeout: int = 900):
+    """Für den Deploy: neue Zusammenführungen anhalten und laufende abwarten."""
+    lock = _lock_path(cfg)
+    lock.write_text(str(os.getpid()))
+    try:
+        end = time.time() + timeout
+        d = _marker_dir(cfg)
+        while d.is_dir() and any(d.iterdir()):
+            if time.time() > end:
+                raise TimeoutError("Zusammenführen läuft seit über 15 Minuten, Abbruch")
+            logf("   warte auf laufendes Zusammenführen ...")
+            time.sleep(3)
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _write_into_staging(cfg: Config, lease, tar_path: Path, members) -> None:
+    if (not (cfg.staging_world / "level.dat").exists()
+            or bundle_for_staging(cfg) != lease["bundle_hash"]):
+        # Neue Welt oder neues Bundle: level.dat, data/ und datapacks/ aus dessen Vorlage
+        init_staging(cfg, lease["bundle_hash"])
+    with tarfile.open(tar_path, "r") as tar:
+        for m in members:
+            target = join_safe(cfg.staging_world, m.name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_name(target.name + ".tmp")
+            src = tar.extractfile(m)
+            if src is None:
+                raise ValueError(f"{m.name} nicht lesbar")
+            with open(tmp, "wb") as out:
+                shutil.copyfileobj(src, out, 1024 * 1024)
+            os.replace(tmp, target)
+
+
 def merge_package(cfg: Config, state: State, lease, tar_path: Path) -> None:
     """Läuft in einem Hintergrund-Thread."""
     tile = state.tile(lease["tile_key"])
@@ -47,26 +130,18 @@ def merge_package(cfg: Config, state: State, lease, tar_path: Path) -> None:
     try:
         members = package.validate_package(tar_path, tile, dim_path)
         with _merge_lock:
-            if (not (cfg.staging_world / "level.dat").exists()
-                    or bundle_for_staging(cfg) != lease["bundle_hash"]):
-                # Neue Welt oder neues Bundle: level.dat, data/ und datapacks/ aus dessen Vorlage
-                init_staging(cfg, lease["bundle_hash"])
-            with tarfile.open(tar_path, "r") as tar:
-                for m in members:
-                    target = join_safe(cfg.staging_world, m.name)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    tmp = target.with_name(target.name + ".tmp")
-                    src = tar.extractfile(m)
-                    if src is None:
-                        raise ValueError(f"{m.name} nicht lesbar")
-                    with open(tmp, "wb") as out:
-                        shutil.copyfileobj(src, out, 1024 * 1024)
-                    os.replace(tmp, target)
+            marker = _enter_merge(cfg, lease["id"])
+            try:
+                _write_into_staging(cfg, lease, tar_path, members)
+                # Noch unter der Markierung: ein Deploy sieht die Kachel entweder gar nicht
+                # oder fertig und in der Staging-Welt
+                state.finish_merge(lease, size, True)
+            finally:
+                marker.unlink(missing_ok=True)
         if lease["tile_key"] in cfg.verify_tiles:
             keep_verify_copy(cfg, state, lease, tar_path)
         else:
             tar_path.unlink(missing_ok=True)
-        state.finish_merge(lease, size, True)
         log.info("Kachel %s zusammengeführt (%d Dateien, %.1f MB)", tile.key, len(members), size / 1e6)
     except Exception as e:  # noqa: BLE001 - Fehler landet im Status
         log.exception("Zusammenführen von %s fehlgeschlagen", tile.key)
@@ -147,4 +222,4 @@ def bundle_for_staging(cfg: Config) -> str | None:
 
 
 __all__ = ["init_staging", "merge_package", "keep_verify_copy", "run_compare", "bundle", "bundle_for_staging",
-           "create_recheck", "STAGING_COPY"]
+           "create_recheck", "STAGING_COPY", "staging_locked"]
