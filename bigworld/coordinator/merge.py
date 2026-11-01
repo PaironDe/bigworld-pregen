@@ -47,7 +47,9 @@ def merge_package(cfg: Config, state: State, lease, tar_path: Path) -> None:
     try:
         members = package.validate_package(tar_path, tile, dim_path)
         with _merge_lock:
-            if not (cfg.staging_world / "level.dat").exists():
+            if (not (cfg.staging_world / "level.dat").exists()
+                    or bundle_for_staging(cfg) != lease["bundle_hash"]):
+                # Neue Welt oder neues Bundle: level.dat, data/ und datapacks/ aus dessen Vorlage
                 init_staging(cfg, lease["bundle_hash"])
             with tarfile.open(tar_path, "r") as tar:
                 for m in members:
@@ -97,6 +99,7 @@ def run_compare(cfg: Config, state: State, tile_key: str) -> dict:
         raise ValueError("Für den Vergleich werden zwei Kopien gebraucht")
     a, b = rows[0], rows[1]
     names = {r["id"]: r["name"] for r in state.q("SELECT id, name FROM workers")}
+    names[STAGING_COPY] = "Bestand (Staging-Welt)"
     log.info("Vergleiche %s: %s gegen %s", tile_key, a["worker_id"], b["worker_id"])
     try:
         rep = compare_packages(Path(a["path"]), Path(b["path"])).to_dict()
@@ -109,9 +112,39 @@ def run_compare(cfg: Config, state: State, tile_key: str) -> dict:
     return rep
 
 
+STAGING_COPY = "staging"
+
+
+def create_recheck(cfg: Config, state: State, tile_key: str, worker_id: str) -> int:
+    """Stichprobe anlegen: Bestand der Kachel aus der Staging-Welt als Vergleichskopie ablegen.
+
+    Der Worker, der die Kachel ursprünglich generiert hat, generiert sie mit dem aktuellen
+    Bundle noch einmal; danach werden beide Fassungen verglichen. Gibt die Dateianzahl zurück.
+    """
+    from ..common.hashing import sha256_file
+    from .state import now
+
+    tile = state.tile(tile_key)
+    dim_path = cfg.dimension(tile.dim).path
+    files = package.collect_tile_files(cfg.staging_world, dim_path, tile)
+    if not any(rel.split("/")[-2] == "region" for rel, _ in files):
+        raise ValueError(f"{tile_key}: keine Regionsdateien in der Staging-Welt")
+    d = cfg.verify_dir / tile.key.replace("|", "_").replace(":", "-")
+    d.mkdir(parents=True, exist_ok=True)
+    for old in d.glob("*.tar"):
+        old.unlink()
+    dest = d / f"{STAGING_COPY}.tar"
+    package.write_package(dest, {"tile": tile.to_dict(), "source": "staging"}, files)
+    state.add_recheck(tile_key, worker_id)
+    state.x("INSERT OR REPLACE INTO verify_copies(tile_key, lease_id, worker_id, path, sha256, created) "
+            "VALUES(?,?,?,?,?,?)", tile_key, "staging", STAGING_COPY, str(dest), sha256_file(dest), now())
+    return len(files)
+
+
 def bundle_for_staging(cfg: Config) -> str | None:
     p = cfg.data_dir / "staging" / "bundle"
     return p.read_text().strip() if p.exists() else None
 
 
-__all__ = ["init_staging", "merge_package", "keep_verify_copy", "run_compare", "bundle", "bundle_for_staging"]
+__all__ = ["init_staging", "merge_package", "keep_verify_copy", "run_compare", "bundle", "bundle_for_staging",
+           "create_recheck", "STAGING_COPY"]

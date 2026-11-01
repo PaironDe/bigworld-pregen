@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS tiles (
     attempts INTEGER NOT NULL DEFAULT 0,
     done_at REAL, done_by TEXT, bundle_hash TEXT, size INTEGER,
     last_error TEXT,
-    in_world INTEGER NOT NULL DEFAULT 1       -- 0 = von keinem Bereich mehr berührt und nicht fertig
+    in_world INTEGER NOT NULL DEFAULT 1,      -- 0 = von keinem Bereich mehr berührt und nicht fertig
+    live_at REAL                              -- Zeitpunkt, ab dem die Kachel in der Live-Welt ist
 );
 CREATE TABLE IF NOT EXISTS leases (
     id TEXT PRIMARY KEY,
@@ -95,6 +96,8 @@ class State:
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(tiles)")}
         if "order_key" not in cols:
             self.db.execute("ALTER TABLE tiles ADD COLUMN order_key REAL")
+        if "live_at" not in cols:
+            self.db.execute("ALTER TABLE tiles ADD COLUMN live_at REAL")
         self.sync_tiles()
 
     # Hilfen -----------------------------------------------------------------
@@ -404,6 +407,15 @@ class State:
             return {"done": True}
 
     def _pick_verify(self, wid: str) -> str | None:
+        # Stichproben nach einem Bundle-Wechsel: dieselbe Kachel vom selben Worker (gleiche GPU)
+        # noch einmal generieren und gegen den Bestand in der Staging-Welt vergleichen
+        for key, owner in self.rechecks().items():
+            if owner != wid:
+                continue
+            copies = {r["worker_id"] for r in self.q("SELECT worker_id FROM verify_copies WHERE tile_key=?", key)}
+            active = self.q("SELECT 1 FROM leases WHERE tile_key=? AND status='active' AND kind='verify'", key)
+            if wid not in copies and not active:
+                return key
         for key in self.cfg.verify_tiles:
             rows = self.q("SELECT status FROM tiles WHERE key=? AND in_world=1", key)
             if not rows:
@@ -576,6 +588,20 @@ class State:
                 self.x("UPDATE leases SET status='completed', phase='done', progress=1, updated=? WHERE id=?", now(), lease["id"])
             return self.q("SELECT COUNT(*) c FROM verify_copies WHERE tile_key=?", lease["tile_key"])[0]["c"]
 
+    def rechecks(self) -> dict[str, str]:
+        """Kachel -> Worker-ID, der die Stichprobe generieren soll."""
+        return {r["k"][len("recheck:"):]: r["v"] for r in self.q("SELECT k, v FROM settings WHERE k LIKE 'recheck:%'")}
+
+    def add_recheck(self, tile_key: str, worker_id: str) -> None:
+        self.x("DELETE FROM verify_copies WHERE tile_key=?", tile_key)
+        self.x("DELETE FROM verify_results WHERE tile_key=?", tile_key)
+        self.set_setting(f"recheck:{tile_key}", worker_id)
+
+    def clear_rechecks(self, dims: list[str] | None = None) -> None:
+        for key in list(self.rechecks()):
+            if dims is None or key.split("|")[0] in dims:
+                self.x("DELETE FROM settings WHERE k=?", f"recheck:{key}")
+
     def save_verify_result(self, tile_key: str, result: dict) -> None:
         self.x(
             "INSERT OR REPLACE INTO verify_results(tile_key, result, created) VALUES(?,?,?)",
@@ -593,14 +619,63 @@ class State:
                 self.x("DELETE FROM areas")
                 self.x("DELETE FROM verify_copies")
                 self.x("DELETE FROM verify_results")
-                self.x("DELETE FROM settings WHERE k LIKE 'default_area:%'")
+                self.x("DELETE FROM settings WHERE k LIKE 'default_area:%' OR k LIKE 'recheck:%'")
                 self.sync_tiles()  # legt die Standardbereiche aus der Config neu an
                 return n
             for k in keys:
                 self.tile(k)
-                self.x("UPDATE tiles SET status='pending', attempts=0, last_error=NULL WHERE key=?", k)
+                self.x("UPDATE tiles SET status='pending', attempts=0, last_error=NULL, live_at=NULL WHERE key=?", k)
                 self.x("UPDATE leases SET status='superseded' WHERE tile_key=? AND status='active'", k)
             return len(keys)
+
+    def reset_dims(self, dims: list[str]) -> int:
+        """Alle Kacheln dieser Dimensionen neu generieren; Bereiche und andere Dimensionen bleiben."""
+        with self.lock:
+            for d in dims:
+                self.cfg.dimension(d)  # KeyError bei Tippfehlern
+            n = 0
+            for d in dims:
+                keys = [r["key"] for r in self.q("SELECT key FROM tiles WHERE dim=?", d)]
+                for k in keys:
+                    self.x("UPDATE leases SET status='superseded', updated=? WHERE tile_key=? AND status='active'",
+                           now(), k)
+                    self.x("DELETE FROM verify_copies WHERE tile_key=?", k)
+                    self.x("DELETE FROM verify_results WHERE tile_key=?", k)
+                self.x("UPDATE tiles SET status='pending', attempts=0, last_error=NULL, done_at=NULL, done_by=NULL, "
+                       "bundle_hash=NULL, size=NULL, live_at=NULL WHERE dim=?", d)
+                n += len(keys)
+            self.clear_rechecks(dims)
+            self.sync_tiles()
+            return n
+
+    def supersede_all(self) -> None:
+        """Laufende Arbeit abbrechen (Bundle-Wechsel): Kacheln wieder freigeben."""
+        with self.lock:
+            self.x("UPDATE leases SET status='superseded', updated=? WHERE status='active'", now())
+            self.x("UPDATE tiles SET status='pending' WHERE status='leased'")
+
+    def done_by_dim(self) -> dict[str, dict[str, int]]:
+        """Dimension -> {Bundle-Hash: Anzahl fertiger Kacheln}."""
+        out: dict[str, dict[str, int]] = {}
+        for r in self.q("SELECT dim, bundle_hash, COUNT(*) c FROM tiles WHERE status='done' GROUP BY dim, bundle_hash"):
+            out.setdefault(r["dim"], {})[r["bundle_hash"] or "?"] = r["c"]
+        return out
+
+    # Live-Welt --------------------------------------------------------------
+    def mark_live(self, keys: list[str] | None = None) -> int:
+        """Kacheln als 'in der Live-Welt' markieren (None = alle fertigen)."""
+        with self.lock:
+            if keys is None:
+                n = self.q("SELECT COUNT(*) c FROM tiles WHERE status='done' AND live_at IS NULL")[0]["c"]
+                self.x("UPDATE tiles SET live_at=? WHERE status='done' AND live_at IS NULL", now())
+                return n
+            for k in keys:
+                self.x("UPDATE tiles SET live_at=? WHERE key=?", now(), k)
+            return len(keys)
+
+    def tiles_for_live(self) -> list[Tile]:
+        rows = self.q("SELECT * FROM tiles WHERE status='done' AND live_at IS NULL ORDER BY done_at")
+        return [_tile_from_row(r) for r in rows]
 
     def done_bundle_hashes(self) -> set[str]:
         return {r["bundle_hash"] for r in self.q("SELECT DISTINCT bundle_hash FROM tiles WHERE status='done'")}
@@ -646,9 +721,13 @@ class State:
             for l in active:
                 active_by_tile.setdefault(l["tile_key"], []).append(l)
             tiles_out = []
+            rechecks = self.rechecks()
             totals = {"chunks_total": 0, "chunks_done": 0, "chunks_running": 0, "tiles": {}}
+            totals["live_tiles"] = 0
             for r in self.q("SELECT * FROM tiles WHERE in_world=1"):
                 tile = _tile_from_row(r)
+                if r["live_at"] is not None:
+                    totals["live_tiles"] += 1
                 leases = active_by_tile.get(r["key"], [])
                 gen = next((l for l in leases if l["kind"] == "gen"), None)
                 entry = {
@@ -657,7 +736,8 @@ class State:
                     "status": r["status"], "priority": r["priority"], "attempts": r["attempts"],
                     "error": r["last_error"],
                     "done_by": workers[r["done_by"]]["name"] if r["done_by"] in workers else None,
-                    "verify": r["key"] in self.cfg.verify_tiles,
+                    "verify": r["key"] in self.cfg.verify_tiles or r["key"] in rechecks,
+                    "live": r["live_at"] is not None,
                 }
                 if gen:
                     entry["worker"] = workers[gen["worker_id"]]["name"] if gen["worker_id"] in workers else "?"

@@ -122,7 +122,8 @@ def _gb(n: int) -> str:
     return f"{n / 1024**3:.1f} GB"
 
 
-def run(cfg: Config, state: State, allow_incomplete: bool, ask=input, log=print) -> None:
+def run(cfg: Config, state: State, allow_incomplete: bool, ask=input, log=print, ignore_mods: bool = False,
+        sync_mods: bool = False) -> None:
     if os.geteuid() != 0:
         raise DeployError("Deploy muss mit sudo laufen (Dateien gehören pterodactyl)")
     vol_world = Path(cfg.deploy.volume_world)
@@ -168,6 +169,33 @@ def run(cfg: Config, state: State, allow_incomplete: bool, ask=input, log=print)
         free = shutil.disk_usage(vol_world.parent).free
         if free < staging_size * 1.05:
             raise DeployError("Nicht genug Platz im Volume für die Kopie")
+    from . import bundle as _bundle
+    from .live import compare_mods, plan_mod_sync
+
+    h = _bundle.current_hash(cfg)
+    live_mods = vol_world.parent / "mods"
+    mod_plan = None
+    if h:
+        errors, notes = compare_mods(cfg, h, live_mods)
+        for e in errors:
+            log(f"Mod-Unterschied:      {e}")
+        for n in notes:
+            log(f"Hinweis:              {n}")
+        if errors and sync_mods:
+            mod_plan = plan_mod_sync(cfg, h, live_mods)
+            log(f"Mods angleichen:      {len(mod_plan.add)} neu, {len(mod_plan.remove)} ersetzt, "
+                f"{len(mod_plan.keep)} bleiben (alter Stand wird nach mods.bak-<Zeit> gesichert)")
+            for jar in mod_plan.remove:
+                log(f"   - {jar.name}")
+            for src in mod_plan.add:
+                log(f"   + {src.name}")
+            for jar in mod_plan.keep:
+                log(f"   = {jar.name}")
+        elif errors and not ignore_mods:
+            raise DeployError(
+                "Der Live-Server hat nicht die Mods des Bundles. So nicht starten: Blöcke aus fehlenden Mods "
+                "würden beim Laden der Chunks gelöscht, und selbst generierte Chunks passen nicht. "
+                "Mit --sync-mods gleicht der Deploy die Mods mit an (alte werden gesichert).")
     log("")
     log("Ablauf: Server stoppen -> alte Welt sichern -> alte Welt löschen -> neue Welt einsetzen")
     log("        -> Besitzer auf pterodactyl setzen -> Server starten")
@@ -183,6 +211,13 @@ def run(cfg: Config, state: State, allow_incomplete: bool, ask=input, log=print)
         panel.power("stop")
         if not panel.wait_for("offline", 300, log):
             raise DeployError("Server ist nach 5 Minuten nicht offline. Nichts geändert.")
+
+    if mod_plan is not None:
+        from .live import apply_mod_sync
+
+        log("   Mods angleichen ...")
+        bak = apply_mod_sync(mod_plan, live_mods, cfg.deploy.owner, log)
+        log(f"   alte Mods gesichert in {bak}")
 
     if vol_world.exists() and backup_dir:
         dest = backup_dir / f"world-{time.strftime('%Y%m%d-%H%M%S')}.tar"
@@ -202,6 +237,11 @@ def run(cfg: Config, state: State, allow_incomplete: bool, ask=input, log=print)
     else:
         shutil.copytree(staging, vol_world)
         shutil.rmtree(staging)
+
+    from .live import write_marker
+
+    write_marker(vol_world, h)
+    state.mark_live(None)
 
     log("5/6 Besitzer auf pterodactyl setzen ...")
     uid = pwd.getpwnam(cfg.deploy.owner).pw_uid

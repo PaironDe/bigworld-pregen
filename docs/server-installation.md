@@ -109,6 +109,9 @@ sudo -u bigworld bigworld-coord status                 # Fortschritt im Terminal
 sudo -u bigworld bigworld-coord compare "minecraft:overworld|0|0"   # Vergleich erneut
 sudo -u bigworld bigworld-coord reset "minecraft:overworld|3|-2"    # eine Kachel neu
 sudo -u bigworld bigworld-coord reset --all            # alles neu (löscht Staging)
+sudo -u bigworld bigworld-coord reset --dim minecraft:overworld   # nur eine Dimension neu
+sudo -u bigworld bigworld-coord recheck                # Stichprobe nach Bundle-Wechsel
+sudo -u bigworld bigworld-coord pause | resume
 sudo bigworld-coord seed "$V/world/data/minecraft/world_gen_settings.dat"
 ```
 
@@ -124,3 +127,23 @@ Zeigt vorher Größen, Ziel, Sicherung und Server-Status und verlangt die Eingab
 `pterodactyl` → in `config/lss-server-config.yaml` `generation.enabled: false` setzen →
 Server starten. Verändert wird ausschließlich
 `/var/lib/pterodactyl/volumes/fd1a91d3-…/world` (fest im Code hinterlegt) und die LSS-Config.
+
+`--sync-mods` gleicht dabei die Mods des Live-Servers an das Bundle an (alter Ordner wird
+nach `mods.bak-<Zeit>` gesichert, reine Live-Mods wie LSS bleiben). Ohne den Schalter bricht
+der Deploy ab, wenn dem Live-Server Bundle-Mods fehlen. Nach dem Deploy liegt in der Welt
+`bigworld-deploy.json` (Zeitpunkt, Bundle, Seed).
+
+## Live-Merge (nach dem ersten Deploy)
+
+Neue fertige Kacheln kommen nachts in die Live-Welt. Eingefügt werden nur Chunks, die live
+fehlen oder unfertig sind, alles andere bleibt unangetastet. Der Server wird dafür kurz
+gestoppt (Ankündigung 5 min vorher im Chat).
+
+```bash
+sudo bigworld-coord live-merge --dry-run     # zeigt, was eingefügt würde
+sudo bigworld-coord live-merge               # sofort, mit Bestätigung "EINFÜGEN"
+sudo cp packaging/bigworld-live-merge.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now bigworld-live-merge.timer
+```
+
+Der Timer läuft nur, wenn in der Config `[live_merge] enabled = true` steht.

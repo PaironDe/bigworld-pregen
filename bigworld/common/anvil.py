@@ -118,6 +118,31 @@ class RegionFile:
             return None
         return decompress(*raw)
 
+    def timestamp(self, index: int) -> int:
+        if len(self.data) < 2 * SECTOR:
+            return 0
+        return struct.unpack(">i", self.data[SECTOR + index * 4 : SECTOR + index * 4 + 4])[0]
+
+    def blob(self, index: int) -> bytes | None:
+        """Chunk-Eintrag unverändert (4 Byte Länge, Kompressionsbyte, Daten); None, wenn er fehlt.
+
+        Bei externen Chunks (Flag 0x80) ist das nur der kurze Verweis, die Daten liegen in c.X.Z.mcc.
+        """
+        offset, count = self.location(index)
+        if offset < 2 or count == 0:
+            return None
+        start = offset * SECTOR
+        if start + 5 > len(self.data):
+            raise RegionError(f"{self.path.name}: Chunk {index} zeigt hinter das Dateiende")
+        length = struct.unpack(">i", self.data[start : start + 4])[0]
+        if length <= 0 or start + 4 + length > len(self.data):
+            raise RegionError(f"{self.path.name}: Chunk {index} hat ungültige Länge {length}")
+        return self.data[start : start + 4 + length]
+
+    def is_external(self, index: int) -> bool:
+        b = self.blob(index)
+        return bool(b and b[4] & EXTERNAL_FLAG)
+
     def external_files(self) -> list[Path]:
         """Alle c.*.mcc-Dateien, die zu dieser Region gehören."""
         out = []
@@ -182,6 +207,34 @@ def check_region_complete(path: str | os.PathLike) -> RegionCheck:
         else:
             result.not_full.append((index, status))
     return result
+
+
+def write_region_blobs(path: str | os.PathLike, entries: dict[int, tuple[bytes, int]]) -> None:
+    """Regionsdatei aus unveränderten Chunk-Einträgen {Index: (blob, Zeitstempel)} schreiben.
+
+    Schreibt erst in eine temporäre Datei und ersetzt dann atomar.
+    """
+    header = bytearray(2 * SECTOR)
+    body = bytearray()
+    sector = 2
+    for index in sorted(entries):
+        blob, ts = entries[index]
+        pad = (-len(blob)) % SECTOR
+        count = (len(blob) + pad) // SECTOR
+        if count > 255:
+            raise RegionError(f"Chunk {index} ist zu groß für einen Regionseintrag ({count} Sektoren)")
+        header[index * 4 : index * 4 + 3] = sector.to_bytes(3, "big")
+        header[index * 4 + 3] = count
+        header[SECTOR + index * 4 : SECTOR + index * 4 + 4] = struct.pack(">i", ts)
+        body += blob + b"\0" * pad
+        sector += count
+    path = Path(path)
+    tmp = path.with_name(path.name + ".bwtmp")
+    with open(tmp, "wb") as f:
+        f.write(bytes(header) + bytes(body))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def write_region(path: str | os.PathLike, chunks: dict[int, bytes], comp: int = COMP_ZLIB,

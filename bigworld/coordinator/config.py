@@ -34,6 +34,15 @@ class DeployConfig:
 
 
 @dataclass
+class LiveMergeConfig:
+    # Dauerfreigabe: nach dem ersten Deploy fertige Kacheln nachts in die Live-Welt übernehmen
+    enabled: bool = False
+    announce_minutes: int = 5
+    max_tiles: int = 0  # 0 = alle fertigen
+    message: str = "Gleich kurzer Neustart (ca. 2 min): neue Weltbereiche werden eingefügt. Noch {minutes} min."
+
+
+@dataclass
 class Config:
     host: str
     port: int
@@ -48,6 +57,7 @@ class Config:
     dimensions: list[Dimension]
     verify_tiles: list[str]
     deploy: DeployConfig
+    live_merge: LiveMergeConfig = field(default_factory=LiveMergeConfig)
     path: Path | None = None
 
     def dimension(self, name: str) -> Dimension:
@@ -109,6 +119,13 @@ def load(path: str | os.PathLike | None = None) -> Config:
         lss_config=dep.get("lss_config", "config/lss-server-config.yaml"),
         post_start_commands=list(dep.get("post_start_commands", [])),
     )
+    lmr = raw.get("live_merge", {})
+    live_merge = LiveMergeConfig(
+        enabled=bool(lmr.get("enabled", False)),
+        announce_minutes=max(0, int(lmr.get("announce_minutes", 5))),
+        max_tiles=max(0, int(lmr.get("max_tiles", 0))),
+        message=str(lmr.get("message", LiveMergeConfig.message)),
+    )
     for name in ("worker_token", "admin_token"):
         if len(srv.get(name, "")) < 16:
             raise ValueError(f"[server].{name} fehlt oder ist zu kurz (mind. 16 Zeichen)")
@@ -126,6 +143,7 @@ def load(path: str | os.PathLike | None = None) -> Config:
         dimensions=dims,
         verify_tiles=list(raw.get("verify", {}).get("tiles", [])),
         deploy=deploy,
+        live_merge=live_merge,
         path=p,
     )
 
@@ -264,6 +282,32 @@ name = "spacereloaded:mars"
 path = "dimensions/spacereloaded/mars"
 radius = 4000
 
+# Ad Astra (eigene Planeten, getrennt von Space Reloaded). Die Orbits sind leer und fehlen hier.
+[[world.dimensions]]
+name = "ad_astra:moon"
+path = "dimensions/ad_astra/moon"
+radius = 4000
+
+[[world.dimensions]]
+name = "ad_astra:mars"
+path = "dimensions/ad_astra/mars"
+radius = 4000
+
+[[world.dimensions]]
+name = "ad_astra:venus"
+path = "dimensions/ad_astra/venus"
+radius = 4000
+
+[[world.dimensions]]
+name = "ad_astra:mercury"
+path = "dimensions/ad_astra/mercury"
+radius = 4000
+
+[[world.dimensions]]
+name = "ad_astra:glacio"
+path = "dimensions/ad_astra/glacio"
+radius = 4000
+
 [verify]
 # Determinismus-Test erledigt, keine doppelte Kachel mehr
 tiles = []
@@ -281,6 +325,16 @@ owner = "pterodactyl"
 # LSS-Config relativ zum Server-Ordner; der Deploy setzt dort generation.enabled: false
 lss_config = "config/lss-server-config.yaml"
 post_start_commands = []
+
+[live_merge]
+# Dauerfreigabe (Sören, 01.11.2026): Nach dem ersten Deploy werden fertige Kacheln nachts per
+# systemd-Timer in die Live-Welt übernommen: Ankündigung, save-all, Stopp, nur fehlende Chunks
+# einfügen, Start. Vorhandene Chunks werden nie überschrieben. false = nur per Befehl.
+enabled = true
+# Vorwarnzeit im Chat in Minuten
+announce_minutes = 5
+# Höchstens so viele Kacheln pro Lauf (0 = alle fertigen)
+max_tiles = 0
 """
 
 PRESETS = {"standard": EXAMPLE, "bigworld": BIGWORLD}

@@ -104,6 +104,6 @@ def test_init_preset_keeps_tokens_from_broken_file(tmp_path):
     cfg = config.load(p)
     assert cfg.worker_token == "gyl6NKLzpOzAkiC97UYfFmjHi2NHgKVg"
     assert len(cfg.admin_token) >= 16 and cfg.mixed_gpus_ok
-    assert [d.name for d in cfg.dimensions][-2:] == ["spacereloaded:moon", "spacereloaded:mars"]
+    assert {"spacereloaded:moon", "spacereloaded:mars", "ad_astra:moon"} <= {d.name for d in cfg.dimensions}
     assert cfg.verify_tiles == [] and cfg.deploy.backup_dir == ""
     assert list(tmp_path.glob("c.toml.bak-*"))

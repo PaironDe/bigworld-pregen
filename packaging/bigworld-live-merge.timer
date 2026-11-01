@@ -1,0 +1,10 @@
+[Unit]
+Description=Big World: nächtlicher Live-Merge
+
+[Timer]
+# Start 04:32: Ankündigung im Chat, gegen 04:38 kurzer Neustart
+OnCalendar=*-*-* 04:32:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

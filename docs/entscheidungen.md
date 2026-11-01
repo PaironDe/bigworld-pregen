@@ -4,6 +4,27 @@ Neueste oben. Format: Datum · Entscheidung · Begründung.
 
 ## 01.11.2026
 
+- **Ad Astra (privater 26.2-Port, Stand port.2) kommt ins Bundle**, zusammen mit
+  Towns and Towers (+ CristelLib) und Trek. Getestet auf einem separaten Testserver und im
+  Spiel (Rakete, Mond, Seite an Seite mit Space Reloaded). port.2 definiert die 11
+  Tageszeit-Uhren selbst und läuft mit Fabric Loader 0.19.5, kein Loader-Wechsel.
+- **Neu generiert werden Oberwelt, Nether und End.** Ad Astra fügt in bestehende Dimensionen nur
+  die Ölquelle (Ozeane der Oberwelt) ein, T&T nur Oberwelt-Strukturen, Trek aber auch
+  Nether-Strukturen und überarbeitete End-Städte. Mond/Mars von Space Reloaded dürfen bleiben,
+  wenn die Stichprobe (`recheck`: gleiche Kachel, gleicher Worker, neues Bundle) identisch ist.
+- **Alle fünf Ad-Astra-Planeten ±4000 vorgenerieren** (Mond, Mars, Venus, Merkur, Glacio).
+  Die Orbits sind leer und werden nicht vorgeneriert.
+- **Live-Merge mit Dauerfreigabe** (Sören): Nach dem ersten Deploy werden fertige Kacheln
+  nachts (Timer 04:32) eingefügt: Ankündigung im Chat, `save-all`, Server über das Panel
+  stoppen, **nur fehlende oder unfertige Chunks** einfügen (vorhandene fertige Chunks, also alles,
+  wo jemand war, bleibt unangetastet), Besitzer setzen, starten. Nicht im laufenden Betrieb, weil
+  Minecraft/C2ME Regionsdateien offen halten und die Regel „Server vor Änderungen an der Welt
+  stoppen" gilt. Läuft nur, wenn die Welt per Deploy eingesetzt wurde (Markierungsdatei
+  `bigworld-deploy.json`), der Seed passt und der Live-Server dieselben Mods wie das Bundle hat.
+- **Deploy prüft die Live-Mods.** Fehlen Bundle-Mods auf dem Live-Server, bricht der Deploy ab
+  (Blöcke aus fehlenden Mods würden beim Laden gelöscht). `deploy --sync-mods` gleicht im
+  bestätigten Deploy-Schritt an: alter `mods/`-Ordner wird gesichert, Bundle-Mods kommen dazu,
+  reine Live-Mods (LSS, Lithium, ScalableLux, Do a Barrel Roll …) bleiben.
 - **Mischbetrieb verschiedener GPUs freigegeben.** Vergleich 2080 Super (Linux) gegen 4070
   (Windows) mit C2ME-OpenCL: Biome identisch, aber ~0,8 % der Blöcke verschieden (Erze,
   Deepslate-Übergänge, Dripstone) und vereinzelt andere Strukturstarts. An den Kachelgrenzen

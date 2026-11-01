@@ -1,0 +1,11 @@
+[Unit]
+Description=Big World: fertige Kacheln in die Live-Welt einfügen (nur fehlende Chunks)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# root, weil die Welt-Dateien pterodactyl gehören. Läuft nur, wenn [live_merge] enabled = true
+# und die Welt per Deploy eingesetzt wurde.
+Environment=BIGWORLD_CONFIG=/etc/bigworld/coordinator.toml
+ExecStart=/opt/bigworld/venv/bin/bigworld-coord live-merge --scheduled
+TimeoutStartSec=3h

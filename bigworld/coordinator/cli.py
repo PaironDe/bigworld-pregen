@@ -115,11 +115,22 @@ def cmd_bundle(args) -> int:
         state = State(cfg)
         other = state.done_bundle_hashes() - {h, None}
         if other and not args.force:
-            print(f"ACHTUNG: {len(other)} anderes Bundle hat schon fertige Kacheln ({', '.join(x[:12] for x in other)}).")
-            print("Ein neues Bundle mischt sonst zwei verschiedene Generierungen in einer Welt.")
-            print("Entweder `bigworld-coord reset --all` (alles neu) oder mit --force bewusst aktivieren.")
+            print(f"ACHTUNG: Mit einem anderen Bundle sind schon Kacheln fertig:")
+            for dim, by_hash in sorted(state.done_by_dim().items()):
+                old = {k: v for k, v in by_hash.items() if k != h}
+                if old:
+                    print(f"  {dim:28s} " + ", ".join(f"{n} Kacheln ({k[:12]})" for k, n in old.items()))
+            print("Ein neues Bundle mischt sonst zwei verschiedene Generierungen in einer Welt. Entweder:")
+            print("  - alles neu:        bigworld-coord reset --all, danach bundle build")
+            print("  - nur betroffene:   bigworld-coord reset --dim <dimension> ... für jede Dimension, die die")
+            print("                      neuen Mods verändern, danach bundle build --force und")
+            print("                      bigworld-coord recheck (Stichprobe für die übrigen Dimensionen)")
             return 3
+        previous = bundle.current_hash(cfg)
         bundle.set_current(cfg, h)
+        if previous and previous != h:
+            state.supersede_all()
+            print("Laufende Kacheln des alten Bundles abgebrochen, die Worker synchronisieren neu.")
         print(f"Aktives Bundle: {h}")
         for m in manifest["mods"]:
             print(f"  {m['file']:60s} {m['id']} {m['version']}")
@@ -150,6 +161,12 @@ def cmd_status(args) -> int:
         print(f"  Bereich #{i} {a['label'] or ''} {a['dim']} x {a['x0']}..{a['x1']} z {a['z0']}..{a['z1']}: "
               f"{100 * a['progress']:.0f} %")
     print(f"Chunks:     {t['chunks_done']:,} / {t['chunks_total']:,} ({pct:.1f} %)   {t['cps']:.1f} Chunks/s")
+    if t.get("live_tiles"):
+        waiting = t["tiles"].get("done", 0) - t["live_tiles"]
+        print(f"Live-Welt:  {t['live_tiles']} Kacheln drin, {max(0, waiting)} fertig und warten auf den Live-Merge")
+    rechecks = [x for x in st["tiles"] if x["verify"] and x["key"] not in {v["tile"] for v in st["verify"]}]
+    for x in rechecks:
+        print(f"Stichprobe offen: {x['key']}")
     if t["eta_seconds"]:
         print(f"Restzeit:   ~{t['eta_seconds'] / 3600:.1f} h")
     for w in st["workers"]:
@@ -218,8 +235,79 @@ def cmd_reset(args) -> int:
             shutil.rmtree(staging)
         print(f"{n} Kacheln und alle Bereiche gelöscht, Staging geleert. "
               f"Standardbereiche aus der Config neu angelegt: {len(state.areas())}")
+    elif args.dim:
+        for d in args.dim:
+            try:
+                cfg.dimension(d)
+            except KeyError:
+                print(f"Unbekannte Dimension {d}. Bekannt: {', '.join(x.name for x in cfg.dimensions)}")
+                return 2
+        ans = input(f"Alle Kacheln von {', '.join(args.dim)} neu generieren und ihre Regionsdateien in der "
+                    "Staging-Welt löschen? Bereiche bleiben. (ja/nein) ")
+        if ans.strip().lower() != "ja":
+            print("Abgebrochen")
+            return 1
+        n = state.reset_dims(args.dim)
+        for d in args.dim:
+            dim_dir = cfg.staging_world / cfg.dimension(d).path
+            for storage in ("region", "entities", "poi"):
+                if (dim_dir / storage).exists():
+                    shutil.rmtree(dim_dir / storage)
+        print(f"{n} Kacheln in {', '.join(args.dim)} zurückgesetzt, Staging-Dateien gelöscht.")
     else:
         print(f"{state.reset_tiles(args.tiles)} Kacheln zurückgesetzt")
+    return 0
+
+
+def cmd_recheck(args) -> int:
+    """Stichprobe je Dimension: fertige Kachel mit dem aktuellen Bundle neu generieren und vergleichen."""
+    from . import bundle, merge
+    from .state import State
+
+    cfg = _cfg(args)
+    state = State(cfg)
+    h = bundle.current_hash(cfg)
+    if not h:
+        print("Kein aktives Bundle")
+        return 1
+    dims = args.dim or [d for d, by in state.done_by_dim().items() if any(k != h for k in by)]
+    if not dims:
+        print("Keine Dimension mit Kacheln aus einem älteren Bundle, nichts zu prüfen.")
+        return 0
+    online = {w["id"] for w in state.status()["workers"] if w["online"]}
+    for d in dims:
+        rows = state.q("SELECT * FROM tiles WHERE dim=? AND status='done' AND bundle_hash IS NOT ? "
+                       "ORDER BY order_key", d, h)
+        if not rows:
+            print(f"{d}: keine passende fertige Kachel")
+            continue
+        row = next((r for r in rows if r["done_by"] in online), rows[0])
+        n = merge.create_recheck(cfg, state, row["key"], row["done_by"])
+        who = state.q("SELECT name FROM workers WHERE id=?", row["done_by"])
+        print(f"{d}: Stichprobe {row['key']} ({n} Dateien), wird von {who[0]['name'] if who else row['done_by']} "
+              f"neu generiert{'' if row['done_by'] in online else ' (Worker gerade offline)'}")
+    print("Ergebnis danach mit `bigworld-coord status` (Zeilen 'Vergleich').")
+    return 0
+
+
+def cmd_pause(args) -> int:
+    from .state import State
+
+    State(_cfg(args)).set_setting("paused", "0" if args.cmd == "resume" else "1")
+    print("Generierung " + ("fortgesetzt" if args.cmd == "resume" else "pausiert (laufende Kacheln laufen zu Ende)"))
+    return 0
+
+
+def cmd_live_merge(args) -> int:
+    from . import live
+    from .state import State
+
+    cfg = _cfg(args)
+    try:
+        live.run(cfg, State(cfg), scheduled=args.scheduled, ignore_mods=args.ignore_mods, dry_run=args.dry_run)
+    except live.LiveMergeError as e:
+        print(f"FEHLER: {e}")
+        return 1
     return 0
 
 
@@ -229,7 +317,8 @@ def cmd_deploy(args) -> int:
 
     cfg = _cfg(args)
     try:
-        deploy.run(cfg, State(cfg), allow_incomplete=args.allow_incomplete)
+        deploy.run(cfg, State(cfg), allow_incomplete=args.allow_incomplete,
+                   ignore_mods=args.ignore_mods, sync_mods=args.sync_mods)
     except deploy.DeployError as e:
         print(f"FEHLER: {e}")
         return 1
@@ -300,11 +389,24 @@ def main(argv: list[str] | None = None) -> int:
     sm.set_defaults(fn=cmd_seams)
     r = sub.add_parser("reset", help="Kacheln zurücksetzen")
     r.add_argument("--all", action="store_true")
+    r.add_argument("--dim", action="append", help="nur diese Dimension neu (mehrfach möglich)")
     r.add_argument("tiles", nargs="*")
     r.set_defaults(fn=cmd_reset)
+    rc = sub.add_parser("recheck", help="Stichprobe: fertige Kachel mit neuem Bundle neu generieren und vergleichen")
+    rc.add_argument("--dim", action="append", help="Dimension (Standard: alle mit Kacheln aus älterem Bundle)")
+    rc.set_defaults(fn=cmd_recheck)
+    sub.add_parser("pause", help="Generierung pausieren").set_defaults(fn=cmd_pause)
+    sub.add_parser("resume", help="Generierung fortsetzen").set_defaults(fn=cmd_pause)
     d = sub.add_parser("deploy", help="Staging-Welt ins Pterodactyl-Volume einsetzen (mit Bestätigung)")
     d.add_argument("--allow-incomplete", action="store_true")
+    d.add_argument("--sync-mods", action="store_true", help="Live-Mods an das Bundle angleichen (alte werden gesichert)")
+    d.add_argument("--ignore-mods", action="store_true", help=argparse.SUPPRESS)
     d.set_defaults(fn=cmd_deploy)
+    lv = sub.add_parser("live-merge", help="Fertige Kacheln in die Live-Welt einfügen (nur fehlende Chunks)")
+    lv.add_argument("--scheduled", action="store_true", help="vom Timer: ohne Rückfrage, nur wenn [live_merge] enabled")
+    lv.add_argument("--dry-run", action="store_true", help="nur anzeigen, was eingefügt würde")
+    lv.add_argument("--ignore-mods", action="store_true", help=argparse.SUPPRESS)
+    lv.set_defaults(fn=cmd_live_merge)
     s = sub.add_parser("seed", help="Seed aus level.dat oder world_gen_settings.dat lesen")
     s.add_argument("file")
     s.set_defaults(fn=cmd_seed)
