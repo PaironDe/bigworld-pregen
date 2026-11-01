@@ -176,3 +176,20 @@ def test_recheck_compares_staging_against_new_copy(tmp_path):
     import json
     rep = json.loads(res[0]["result"])
     assert rep["deterministic"] and rep["worker_a"].startswith("Bestand")
+
+
+def test_unreadable_live_chunk_is_kept(tmp_path):
+    import struct
+    src, dst = tmp_path / "staging" / "dim", tmp_path / "live" / "dim"
+    (src / "region").mkdir(parents=True)
+    (dst / "region").mkdir(parents=True)
+    anvil.write_region(src / "region" / "r.0.0.mca", {i: chunk(tag=1) for i in range(2)})
+    live_file = dst / "region" / "r.0.0.mca"
+    anvil.write_region(live_file, {0: chunk(tag=99)})
+    data = bytearray(live_file.read_bytes())
+    data[2 * 4096 + 4] = anvil.COMP_LZ4  # wie ein LZ4-komprimierter Chunk
+    live_file.write_bytes(bytes(data))
+    live.merge_region_set(src, dst, 0, 0, live.MergeStats())
+    r = anvil.RegionFile(live_file)
+    assert r.blob(0)[4] == anvil.COMP_LZ4   # unangetastet
+    assert tag_of(r, 1) == 1                # fehlender Chunk ergänzt

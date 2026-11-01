@@ -83,16 +83,19 @@ class MergeStats:
 
 
 def _is_full(region: anvil.RegionFile, index: int) -> bool:
+    """Vorhandener Live-Chunk fertig? Im Zweifel ja: lieber eine Lücke lassen als Gebautes überschreiben
+    (z. B. LZ4-komprimierte oder unlesbare Chunks werden nie ersetzt)."""
     try:
         data = region.chunk_bytes(index)
-    except (anvil.RegionError, OSError, EOFError, ValueError):
-        return False  # kaputter Chunk in der Live-Welt: lieber ersetzen
+    except Exception:  # noqa: BLE001
+        return True
     if data is None:
         return False
     try:
-        return anvil.chunk_status(data) in anvil.FULL_STATUSES
-    except nbt.NBTError:
-        return False
+        status = anvil.chunk_status(data)
+    except Exception:  # noqa: BLE001
+        return True
+    return status is None or status in anvil.FULL_STATUSES
 
 
 def _copy_external(src_dir: Path, dst_dir: Path, rx: int, rz: int, index: int, stats: MergeStats) -> None:
