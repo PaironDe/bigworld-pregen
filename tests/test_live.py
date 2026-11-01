@@ -225,3 +225,19 @@ def test_worker_pause_only_affects_that_worker(tmp_path):
     st.set_worker_paused("server", False)
     assert st.acquire(a, "h", "h").get("kind") == "gen"
     assert any(w["paused"] is False for w in st.status()["workers"])
+
+
+def test_button_request_bypasses_nightly_switch_but_not_safety(tmp_path, monkeypatch):
+    import pytest
+    st = make_state(tmp_path)          # Vorlage "standard": live_merge.enabled = false
+    cfg = st.cfg
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
+    assert live.run(cfg, st, scheduled=True, log=lambda *_: None) == 0     # ohne Knopf: nichts
+    assert live.read_status(cfg)["state"] == "fertig"
+    live.request_merge(cfg, 0, "test")
+    assert live.read_status(cfg)["requested"]
+    monkeypatch.setattr(live.os, "geteuid", lambda: 1000)
+    with pytest.raises(live.LiveMergeError, match="sudo"):
+        live.run(cfg, st, scheduled=True, log=lambda *_: None)             # mit Knopf: weiter bis zur Prüfung
+    s = live.read_status(cfg)
+    assert not s["requested"] and s["state"] == "fehler"

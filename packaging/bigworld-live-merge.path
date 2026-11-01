@@ -1,0 +1,11 @@
+[Unit]
+Description=Big World: Live-Merge auf Knopfdruck aus dem Koordinator
+
+[Path]
+# Der Koordinator legt diese Datei an, wenn im Browser "Jetzt in die Live-Welt übernehmen"
+# geklickt wird; der Merge selbst läuft als root (Dateien gehören pterodactyl).
+PathExists=/srv/bigworld/live-merge.request
+Unit=bigworld-live-merge.service
+
+[Install]
+WantedBy=multi-user.target

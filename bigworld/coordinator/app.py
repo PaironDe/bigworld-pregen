@@ -76,6 +76,10 @@ class PauseBody(BaseModel):
     paused: bool
 
 
+class LiveMergeBody(BaseModel):
+    announce_minutes: int = 5
+
+
 class ResetBody(BaseModel):
     keys: list[str]
 
@@ -249,6 +253,12 @@ def create_app(cfg: Config, state: State | None = None) -> FastAPI:
         h = bundle.current_hash(cfg)
         s = state.status(h)
         s["bundle"] = h
+        from . import live
+
+        s["live_merge"] = {**live.read_status(cfg),
+                           "pending_tiles": state.q("SELECT COUNT(*) c FROM tiles WHERE status='done' AND live_at IS NULL")[0]["c"],
+                           "deployed": bool(state.q("SELECT 1 FROM tiles WHERE live_at IS NOT NULL LIMIT 1")),
+                           "nightly": cfg.live_merge.enabled}
         return s
 
     @app.post("/api/v1/areas/preview")
@@ -278,6 +288,15 @@ def create_app(cfg: Config, state: State | None = None) -> FastAPI:
     @app.post("/api/v1/workers/{name}/pause")
     def worker_pause(name: str, body: PauseBody, _=Depends(require_admin)):
         return {"worker": state.set_worker_paused(name, body.paused), "paused": body.paused}
+
+    @app.post("/api/v1/live-merge")
+    def live_merge_request(body: LiveMergeBody, _=Depends(require_admin)):
+        from . import live
+
+        if not state.q("SELECT 1 FROM tiles WHERE live_at IS NOT NULL LIMIT 1"):
+            raise HTTPException(409, "Die Welt wurde noch nicht per Deploy eingesetzt")
+        live.request_merge(cfg, body.announce_minutes, "Koordinator")
+        return {"ok": True}
 
     @app.post("/api/v1/tiles/reset")
     def tiles_reset(body: ResetBody, _=Depends(require_admin)):

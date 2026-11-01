@@ -68,6 +68,18 @@
     </div>
   </div>
 
+  <div class="card hidden" id="liveCard">
+    <h2>Live-Welt (Pterodactyl)</h2>
+    <div id="liveInfo" class="muted"></div>
+    <div class="row" style="margin-top:10px; align-items:center; gap:12px; flex-wrap:wrap">
+      <button class="primary" id="liveBtn">Jetzt in die Live-Welt übernehmen</button>
+      <label style="display:flex; gap:6px; align-items:center"><input type="checkbox" id="liveNow">
+        ohne Vorwarnung (niemand online)</label>
+    </div>
+    <div class="muted" style="font-size:12px; margin-top:6px">Der Server wird kurz gestoppt (mit Vorwarnung 5 min im Chat),
+      nur fehlende Chunks werden eingefügt, dann startet er wieder. Bereits vorhandene Chunks bleiben unangetastet.</div>
+  </div>
+
   <div class="card">
     <h2>Worker</h2>
     <div class="tablewrap"><table>
@@ -122,7 +134,33 @@ $("pauseBtn").onclick = async () => {
 function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 function shortDim(d) { return d.replace("minecraft:", "").replace("the_", ""); }
 
+$("liveBtn").onclick = async () => {
+  const now = $("liveNow").checked;
+  const lm = status.live_merge || {};
+  if (!confirm(`${lm.pending_tiles || 0} fertige Kacheln in die Live-Welt übernehmen? Der Server wird dafür kurz gestoppt` +
+               (now ? " (sofort, ohne Ankündigung)." : " (Ankündigung 5 min vorher im Chat)."))) return;
+  try {
+    await api("/api/v1/live-merge", { method: "POST", body: JSON.stringify({ announce_minutes: now ? 0 : 5 }) });
+  } catch (e) { alert(e.message); }
+  refresh();
+};
+
+function renderLive() {
+  const lm = status.live_merge || {};
+  $("liveCard").classList.toggle("hidden", !isAdmin || !lm.deployed);
+  const when = (t) => t ? new Date(t * 1000).toLocaleString("de") : "";
+  let txt = `<b>${lm.pending_tiles || 0}</b> fertige Kacheln warten auf die Live-Welt` +
+    (lm.nightly ? " · automatisch jede Nacht um 04:32" : "");
+  if (lm.requested) txt += `<br><b class="okc">Angefordert</b>, startet in wenigen Sekunden …`;
+  if (lm.state) txt += `<br>Letzter Lauf: <b class="${lm.state === "fehler" ? "err" : lm.state === "läuft" ? "okc" : ""}">${esc(lm.state)}</b>` +
+    ` (${esc(when(lm.finished || lm.started || lm.updated))}) – ${esc(lm.message || "")}`;
+  $("liveInfo").innerHTML = txt;
+  const busy = lm.requested || lm.state === "läuft";
+  $("liveBtn").disabled = busy || !lm.pending_tiles;
+}
+
 function render() {
+  renderLive();
   const t = status.totals;
   const pct = t.chunks_total ? (100 * t.chunks_done / t.chunks_total) : 0;
   $("sub").textContent = `Bundle ${status.bundle ? status.bundle.slice(0, 12) : "fehlt"} · ${status.paused ? "pausiert" : "läuft"}`;

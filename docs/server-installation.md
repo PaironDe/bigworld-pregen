@@ -152,3 +152,12 @@ sudo systemctl daemon-reload && sudo systemctl enable --now bigworld-live-merge.
 ```
 
 Der Timer läuft nur, wenn in der Config `[live_merge] enabled = true` steht.
+
+**Knopf im Koordinator:** Mit Admin-Token angemeldet gibt es die Karte „Live-Welt“ mit
+„Jetzt in die Live-Welt übernehmen“ (optional ohne Vorwarnung). Der Koordinator legt dafür
+`/srv/bigworld/live-merge.request` an, eine systemd-Pfad-Unit startet den Merge als root:
+
+```bash
+sudo cp /opt/bigworld/src/packaging/bigworld-live-merge.path /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now bigworld-live-merge.path
+```

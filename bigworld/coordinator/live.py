@@ -27,6 +27,8 @@ from .config import ALLOWED_VOLUME_WORLD, Config
 from .state import State
 
 MARKER = "bigworld-deploy.json"
+REQUEST_FILE = "live-merge.request"     # legt der Koordinator an (Knopf), systemd-Pfad-Unit startet den Merge
+STATUS_FILE = "live-merge-status.json"  # Ergebnis des letzten Laufs für die Oberfläche
 CONFIRM_TEXT = "EINFÜGEN"
 
 
@@ -299,15 +301,80 @@ def _chown_tree(paths: list[Path], owner: str) -> None:
             done.add(q)
 
 
+def request_merge(cfg: Config, announce_minutes: int, who: str = "") -> None:
+    """Vom Koordinator (Knopf): Anfrage ablegen; die systemd-Pfad-Unit startet den Merge als root."""
+    p = cfg.data_dir / REQUEST_FILE
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps({"announce_minutes": max(0, int(announce_minutes)), "by": who,
+                               "requested_at": time.time()}))
+    os.replace(tmp, p)
+
+
+def take_request(cfg: Config) -> dict | None:
+    p = cfg.data_dir / REQUEST_FILE
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text() or "{}")
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    p.unlink(missing_ok=True)
+    return data
+
+
+def write_status(cfg: Config, **info) -> None:
+    p = cfg.data_dir / STATUS_FILE
+    try:
+        old = json.loads(p.read_text()) if p.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        old = {}
+    old.update(info, updated=time.time())
+    try:
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(json.dumps(old, indent=2))
+        os.replace(tmp, p)
+        if os.geteuid() == 0:
+            st = cfg.data_dir.stat()
+            os.chown(p, st.st_uid, st.st_gid)
+    except OSError:
+        pass
+
+
+def read_status(cfg: Config) -> dict:
+    p = cfg.data_dir / STATUS_FILE
+    try:
+        out = json.loads(p.read_text()) if p.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        out = {}
+    out["requested"] = (cfg.data_dir / REQUEST_FILE).exists()
+    return out
+
+
 def run(cfg: Config, state: State, scheduled: bool, ignore_mods: bool = False, dry_run: bool = False,
         ask=input, log=print) -> int:
+    request = take_request(cfg) if scheduled and not dry_run else None
+    if not dry_run:
+        write_status(cfg, state="läuft", message="gestartet" + (" (Knopf)" if request else ""), started=time.time())
+    try:
+        n = _run(cfg, state, scheduled, request, ignore_mods, dry_run, ask, log)
+    except Exception as e:
+        if not dry_run:
+            write_status(cfg, state="fehler", message=str(e)[:500], finished=time.time())
+        raise
+    return n
+
+
+def _run(cfg: Config, state: State, scheduled: bool, request: dict | None, ignore_mods: bool, dry_run: bool,
+         ask, log) -> int:
     from . import bundle
     from .deploy import Panel
 
     lm = cfg.live_merge
-    if scheduled and not lm.enabled:
+    if scheduled and not lm.enabled and request is None:
         log("Live-Merge ist in der Konfiguration nicht freigegeben ([live_merge] enabled = false). Nichts getan.")
+        write_status(cfg, state="fertig", message="nicht freigegeben, nichts getan", finished=time.time())
         return 0
+    announce = lm.announce_minutes if request is None else int(request.get("announce_minutes", lm.announce_minutes))
     if os.geteuid() != 0 and not dry_run:
         raise LiveMergeError("Live-Merge muss mit sudo laufen (Dateien gehören pterodactyl)")
     vol_world = Path(cfg.deploy.volume_world)
@@ -321,6 +388,8 @@ def run(cfg: Config, state: State, scheduled: bool, ignore_mods: bool = False, d
     tiles = state.tiles_for_live()
     if not tiles:
         log("Keine neuen fertigen Kacheln. Nichts zu tun.")
+        if not dry_run:
+            write_status(cfg, state="fertig", message="keine neuen Kacheln", finished=time.time())
         return 0
     if lm.max_tiles > 0:
         tiles = tiles[: lm.max_tiles]
@@ -352,11 +421,12 @@ def run(cfg: Config, state: State, scheduled: bool, ignore_mods: bool = False, d
     panel = Panel(cfg.deploy.panel_url, cfg.deploy.api_key, cfg.deploy.server_id)
     was_running = panel.state() != "offline"
     if was_running:
-        if lm.announce_minutes > 1:
-            panel.command(f"say {lm.message.format(minutes=lm.announce_minutes)}")
-            log(f"Ankündigung: noch {lm.announce_minutes} min")
-            time.sleep(60 * (lm.announce_minutes - 1))
-        if lm.announce_minutes > 0:
+        if announce > 1:
+            write_status(cfg, state="läuft", message=f"Ankündigung, Neustart in {announce} min")
+            panel.command(f"say {lm.message.format(minutes=announce)}")
+            log(f"Ankündigung: noch {announce} min")
+            time.sleep(60 * (announce - 1))
+        if announce > 0:
             panel.command(f"say {lm.message.format(minutes=1)}")
             log("Ankündigung: noch 1 min")
             time.sleep(60)
@@ -366,6 +436,7 @@ def run(cfg: Config, state: State, scheduled: bool, ignore_mods: bool = False, d
         if not panel.wait_for("offline", 300, log):
             raise LiveMergeError("Server ist nach 5 Minuten nicht offline. Nichts geändert.")
 
+    write_status(cfg, state="läuft", message=f"Server gestoppt, füge {len(tiles)} Kacheln ein")
     stats = MergeStats()
     merged: list[str] = []
     try:
@@ -387,6 +458,9 @@ def run(cfg: Config, state: State, scheduled: bool, ignore_mods: bool = False, d
     for t in tiles:
         if t.key in merged:
             remove_tile_from_staging(staging, cfg.dimension(t.dim).path, t)
-    log(f"Fertig: {stats.regions_new} neue Regionen, {stats.regions_merged} ergänzt, "
-        f"{stats.chunks_added:,} Chunks eingefügt, {stats.chunks_kept:,} vorhandene Chunks unangetastet")
+    summary = (f"{len(merged)} Kacheln: {stats.regions_new} neue Regionen, {stats.regions_merged} ergänzt, "
+               f"{stats.chunks_added:,} Chunks eingefügt, {stats.chunks_kept:,} vorhandene unangetastet")
+    log("Fertig: " + summary)
+    write_status(cfg, state="fertig", message=summary, finished=time.time(), tiles=len(merged),
+                 chunks_added=stats.chunks_added)
     return len(merged)
