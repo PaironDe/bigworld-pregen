@@ -199,7 +199,7 @@ class Engine:
                     msg = str(e)
                     self.log(f"FEHLER: {msg}")
                     if isinstance(e, ServerError) and e.tail:
-                        self.log("Letzte Server-Ausgabe:\n" + tail_text(e.tail))
+                        self.log("Server-Ausgabe:\n" + tail_text(e.tail, 40))
                     self.set_status(last_error=msg)
                     if isinstance(e, ApiError) and e.status in (401, 403, 426):
                         self.phase("error", msg)

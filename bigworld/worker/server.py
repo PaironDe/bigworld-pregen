@@ -133,7 +133,21 @@ class MinecraftServer:
                 raise ServerError(f"Server hat sich beendet (Code {self.proc.poll() if self.proc else '?'})",
                                   list(self.tail))
             if RE_FATAL.search(line):
-                raise ServerError(f"Server meldet einen Fehler: {line.strip()[:200]}", list(self.tail))
+                # Stacktrace folgt in den nächsten Zeilen: kurz mitlesen, damit die Ursache im Protokoll steht
+                trace = [line]
+                stop_at = time.time() + 3
+                while time.time() < stop_at and len(trace) < 60:
+                    try:
+                        nxt = self.lines.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
+                    if nxt == "\0EXIT":
+                        break
+                    trace.append(nxt)
+                causes = [t.strip() for t in trace if t.lstrip().startswith("Caused by:")]
+                detail = causes[-1] if causes else (trace[1].strip() if len(trace) > 1 else "")
+                raise ServerError(f"Server meldet einen Fehler: {line.strip()[:160]} | {detail[:300]} "
+                                  f"(vollständig in {self.log_path})", trace)
             if on_line:
                 on_line(line)
             m = pattern.search(line)
