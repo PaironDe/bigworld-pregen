@@ -371,6 +371,11 @@ def run(cfg: Config, state: State, scheduled: bool, ignore_mods: bool = False, d
         if was_running:
             panel.power("start")
             log("Server wird gestartet")
+            if cfg.deploy.post_start_commands and panel.wait_for("running", 600, log):
+                time.sleep(20)
+                for cmd in cfg.deploy.post_start_commands:
+                    log(f"Konsole: {cmd}")
+                    panel.command(cmd)
     for t in tiles:
         if t.key in merged:
             remove_tile_from_staging(staging, cfg.dimension(t.dim).path, t)

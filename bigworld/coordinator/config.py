@@ -324,7 +324,8 @@ server_id = "fd1a91d3"
 owner = "pterodactyl"
 # LSS-Config relativ zum Server-Ordner; der Deploy setzt dort generation.enabled: false
 lss_config = "config/lss-server-config.yaml"
-post_start_commands = []
+# Nach Deploy und nach jedem Live-Merge: LSS baut die LOD-Daten für die neuen Chunks
+post_start_commands = ["lsslod store backfill start"]
 
 [live_merge]
 # Dauerfreigabe (Sören, 01.11.2026): Nach dem ersten Deploy werden fertige Kacheln nachts per
